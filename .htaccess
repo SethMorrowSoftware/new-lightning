@@ -1,0 +1,35 @@
+# Storm Watch — root guard.
+#
+# This file only matters for the "simple" deployment, where the whole folder is
+# uploaded inside public_html and the document root cannot be changed. It keeps
+# the application internals unreachable and serves everything from public/.
+#
+# In the recommended deployment the document root points at public/ directly and
+# this file is never consulted.
+
+DirectoryIndex public/index.php index.php
+
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Application internals are never web content.
+  RewriteRule ^(?:config|data|src|bin|tests)(?:/|$) - [F,L]
+
+  # Serve everything else out of public/.
+  RewriteCond %{REQUEST_URI} !/public/
+  RewriteRule ^(.*)$ public/$1 [L]
+</IfModule>
+
+# Second line of defence for hosts without mod_rewrite: never hand out the
+# database, logs or lock files even if someone reaches them directly.
+<FilesMatch "\.(sqlite|sqlite-wal|sqlite-shm|db|log|lock|ini)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>

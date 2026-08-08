@@ -1,0 +1,423 @@
+<?php
+/**
+ * Application settings: everything an operator can change without editing a
+ * file. Values live in the `settings` table; the schema below defines types,
+ * defaults and validation so that a bad value can never reach the alert path.
+ */
+declare(strict_types=1);
+
+namespace StormWatch;
+
+final class Settings
+{
+    /** Sentinel a form posts to blank out a stored secret. */
+    public const CLEAR_SECRET = '__sw_clear__';
+
+    /** @var array<string,mixed>|null */
+    private static ?array $cache = null;
+
+    /**
+     * type: string|text|int|float|bool|enum|secret|csv
+     *
+     * @return array<string,array<string,mixed>>
+     */
+    public static function schema(): array
+    {
+        return [
+            // ---- Venue ----
+            'venue_name'      => ['type' => 'string', 'default' => 'Castle Fun Center', 'max' => 120],
+            'venue_address'   => ['type' => 'string', 'default' => '109 Brookside Ave, Chester, NY 10918', 'max' => 200],
+            'venue_lat'       => ['type' => 'float', 'default' => 41.3608, 'min' => -90, 'max' => 90],
+            'venue_lon'       => ['type' => 'float', 'default' => -74.2854, 'min' => -180, 'max' => 180],
+            'timezone'        => ['type' => 'string', 'default' => 'America/New_York', 'max' => 64],
+            'units'           => ['type' => 'enum', 'default' => 'mi', 'options' => ['mi', 'km']],
+
+            // ---- Alert thresholds ----
+            'alert_radius_mi'   => ['type' => 'float', 'default' => 10.0, 'min' => 0.5, 'max' => 200],
+            'watch_radius_mi'   => ['type' => 'float', 'default' => 20.0, 'min' => 0.5, 'max' => 300],
+            'display_radius_mi' => ['type' => 'float', 'default' => 30.0, 'min' => 1, 'max' => 400],
+            'all_clear_minutes' => ['type' => 'int', 'default' => 30, 'min' => 1, 'max' => 240],
+            'realert_minutes'   => ['type' => 'int', 'default' => 15, 'min' => 0, 'max' => 240],
+            'closer_delta_mi'   => ['type' => 'float', 'default' => 3.0, 'min' => 0, 'max' => 100],
+            'notify_watch'      => ['type' => 'bool', 'default' => false],
+            'notify_all_clear'  => ['type' => 'bool', 'default' => true],
+            'notify_errors'     => ['type' => 'bool', 'default' => true],
+
+            // ---- Slack ----
+            'slack_enabled'    => ['type' => 'bool', 'default' => false],
+            'slack_mode'       => ['type' => 'enum', 'default' => 'bot', 'options' => ['bot', 'webhook']],
+            'slack_bot_token'  => ['type' => 'secret', 'default' => ''],
+            'slack_webhook_url' => ['type' => 'secret', 'default' => ''],
+            'slack_channel'    => ['type' => 'string', 'default' => '', 'max' => 120],
+            'slack_mention'    => ['type' => 'enum', 'default' => 'none', 'options' => ['none', 'here', 'channel']],
+            'slack_extra_mention' => ['type' => 'string', 'default' => '', 'max' => 200],
+            'slack_username'   => ['type' => 'string', 'default' => '', 'max' => 80],
+            'slack_icon_emoji' => ['type' => 'string', 'default' => '', 'max' => 40],
+
+            // ---- Email ----
+            'email_enabled'   => ['type' => 'bool', 'default' => false],
+            'email_to'        => ['type' => 'csv', 'default' => ''],
+            'email_from'      => ['type' => 'string', 'default' => '', 'max' => 160],
+            'email_from_name' => ['type' => 'string', 'default' => 'Storm Watch', 'max' => 80],
+            'email_transport' => ['type' => 'enum', 'default' => 'mail', 'options' => ['mail', 'smtp']],
+            'smtp_host'       => ['type' => 'string', 'default' => '', 'max' => 160],
+            'smtp_port'       => ['type' => 'int', 'default' => 587, 'min' => 1, 'max' => 65535],
+            'smtp_secure'     => ['type' => 'enum', 'default' => 'tls', 'options' => ['none', 'tls', 'ssl']],
+            'smtp_user'       => ['type' => 'string', 'default' => '', 'max' => 160],
+            'smtp_pass'       => ['type' => 'secret', 'default' => ''],
+
+            // ---- Data source ----
+            'provider'         => ['type' => 'enum', 'default' => 'simulator', 'options' => ['blitzortung', 'rest', 'relay', 'simulator']],
+            'worker_seconds'   => ['type' => 'int', 'default' => 50, 'min' => 5, 'max' => 300],
+            'blitz_servers'    => ['type' => 'csv', 'default' => 'ws1,ws7,ws8'],
+            'blitz_init_json'  => ['type' => 'string', 'default' => '{"a":111}', 'max' => 200],
+            'rest_endpoint'    => ['type' => 'string', 'default' => '', 'max' => 500],
+            'rest_api_key'     => ['type' => 'secret', 'default' => ''],
+            'rest_auth_mode'   => ['type' => 'enum', 'default' => 'query', 'options' => ['none', 'query', 'header', 'bearer']],
+            'rest_auth_name'   => ['type' => 'string', 'default' => 'apikey', 'max' => 80],
+            'rest_extra_headers' => ['type' => 'text', 'default' => '', 'max' => 2000],
+            'rest_poll_seconds' => ['type' => 'int', 'default' => 60, 'min' => 15, 'max' => 3600],
+            'rest_map_root'    => ['type' => 'string', 'default' => 'data', 'max' => 120],
+            'rest_map_lat'     => ['type' => 'string', 'default' => 'lat', 'max' => 120],
+            'rest_map_lon'     => ['type' => 'string', 'default' => 'lon', 'max' => 120],
+            'rest_map_time'    => ['type' => 'string', 'default' => 'time', 'max' => 120],
+            'rest_time_format' => ['type' => 'enum', 'default' => 'auto', 'options' => ['auto', 'iso8601', 'epoch_s', 'epoch_ms', 'epoch_ns']],
+
+            // ---- Retention / access ----
+            'retention_hours'  => ['type' => 'int', 'default' => 72, 'min' => 1, 'max' => 8760],
+            'dashboard_public' => ['type' => 'bool', 'default' => false],
+            'ingest_token'     => ['type' => 'secret', 'default' => ''],
+            'kiosk_token'      => ['type' => 'secret', 'default' => ''],
+            'cron_token'       => ['type' => 'secret', 'default' => ''],
+
+            // ---- Presentation ----
+            'ui_refresh_seconds' => ['type' => 'int', 'default' => 10, 'min' => 3, 'max' => 300],
+            'map_zoom'         => ['type' => 'int', 'default' => 10, 'min' => 3, 'max' => 16],
+            'radar_overlay'    => ['type' => 'enum', 'default' => 'rainviewer', 'options' => ['none', 'rainviewer', 'nexrad']],
+            'radar_opacity'    => ['type' => 'int', 'default' => 55, 'min' => 5, 'max' => 100],
+            'marker_ttl_minutes' => ['type' => 'int', 'default' => 60, 'min' => 1, 'max' => 720],
+        ];
+    }
+
+    /** @return array<string,mixed> */
+    public static function defaults(): array
+    {
+        $out = [];
+        foreach (self::schema() as $key => $meta) {
+            $out[$key] = $meta['default'];
+        }
+        return $out;
+    }
+
+    public static function flushCache(): void
+    {
+        self::$cache = null;
+    }
+
+    /** @return array<string,mixed> */
+    public static function all(): array
+    {
+        if (self::$cache !== null) {
+            return self::$cache;
+        }
+        $values = self::defaults();
+        $schema = self::schema();
+
+        try {
+            $rows = Database::instance()->all('SELECT skey, svalue FROM settings');
+        } catch (\Throwable $e) {
+            return $values; // not installed yet
+        }
+
+        foreach ($rows as $row) {
+            $key = (string) $row['skey'];
+            if (!isset($schema[$key])) {
+                continue;
+            }
+            $raw = $row['svalue'];
+            if ($raw === null) {
+                continue;
+            }
+            $values[$key] = self::decode($schema[$key], (string) $raw);
+        }
+
+        self::$cache = $values;
+        return $values;
+    }
+
+    /** @return mixed */
+    public static function get(string $key, $default = null)
+    {
+        $all = self::all();
+        return array_key_exists($key, $all) ? $all[$key] : $default;
+    }
+
+    public static function getString(string $key): string
+    {
+        return (string) self::get($key, '');
+    }
+
+    public static function getInt(string $key): int
+    {
+        return (int) self::get($key, 0);
+    }
+
+    public static function getFloat(string $key): float
+    {
+        return (float) self::get($key, 0.0);
+    }
+
+    public static function getBool(string $key): bool
+    {
+        return (bool) self::get($key, false);
+    }
+
+    /** @return array<int,string> */
+    public static function getList(string $key): array
+    {
+        $value = (string) self::get($key, '');
+        if (trim($value) === '') {
+            return [];
+        }
+        $parts = preg_split('/[,\s;]+/', $value) ?: [];
+        return array_values(array_filter(array_map('trim', $parts), static fn(string $p): bool => $p !== ''));
+    }
+
+    /**
+     * Values safe to hand to a browser: secrets become a boolean "is it set".
+     *
+     * @return array<string,mixed>
+     */
+    public static function safe(): array
+    {
+        $all = self::all();
+        $out = [];
+        foreach (self::schema() as $key => $meta) {
+            if ($meta['type'] === 'secret') {
+                $out[$key . '_set'] = ($all[$key] ?? '') !== '';
+                continue;
+            }
+            $out[$key] = $all[$key] ?? $meta['default'];
+        }
+        return $out;
+    }
+
+    /**
+     * Validate and persist a batch of settings.
+     *
+     * Secrets are left untouched when the posted value is an empty string
+     * (the form shows a masked placeholder, not the real token). Post
+     * Settings::CLEAR_SECRET to blank one out.
+     *
+     * @param array<string,mixed> $input
+     * @return array<string,string> field => error message; empty means saved
+     */
+    public static function put(array $input): array
+    {
+        $schema = self::schema();
+        $errors = [];
+        $clean = [];
+
+        foreach ($input as $key => $value) {
+            if (!isset($schema[$key])) {
+                continue;
+            }
+            $meta = $schema[$key];
+
+            if ($meta['type'] === 'secret') {
+                if (is_string($value) && $value === self::CLEAR_SECRET) {
+                    $clean[$key] = '';
+                    continue;
+                }
+                if (!is_string($value) || trim($value) === '') {
+                    continue; // leave the stored secret alone
+                }
+                $clean[$key] = trim($value);
+                continue;
+            }
+
+            try {
+                $clean[$key] = self::coerce($key, $meta, $value);
+            } catch (\InvalidArgumentException $e) {
+                $errors[$key] = $e->getMessage();
+            }
+        }
+
+        // Cross-field rules: the rings have to nest, or the map lies to people.
+        $merged = array_merge(self::all(), $clean);
+        if ((float) $merged['watch_radius_mi'] < (float) $merged['alert_radius_mi']) {
+            $errors['watch_radius_mi'] = 'The watch radius must be at least as large as the alert radius.';
+        }
+        if ((float) $merged['display_radius_mi'] < (float) $merged['watch_radius_mi']) {
+            $errors['display_radius_mi'] = 'The display radius must be at least as large as the watch radius.';
+        }
+        if (isset($clean['timezone']) && !in_array($clean['timezone'], timezone_identifiers_list(), true)) {
+            $errors['timezone'] = 'Unknown time zone. Use an identifier such as America/New_York.';
+        }
+        if (!empty($merged['slack_enabled'])) {
+            if ($merged['slack_mode'] === 'bot') {
+                if (($merged['slack_bot_token'] ?? '') === '') {
+                    $errors['slack_bot_token'] = 'A bot token is required when Slack alerts use bot mode.';
+                }
+                if (trim((string) $merged['slack_channel']) === '') {
+                    $errors['slack_channel'] = 'Choose a channel for Slack alerts.';
+                }
+            } elseif (($merged['slack_webhook_url'] ?? '') === '') {
+                $errors['slack_webhook_url'] = 'An incoming webhook URL is required when Slack alerts use webhook mode.';
+            }
+        }
+        if (!empty($merged['email_enabled'])) {
+            if (self::listFrom((string) $merged['email_to']) === []) {
+                $errors['email_to'] = 'Add at least one recipient address.';
+            }
+            if ($merged['email_transport'] === 'smtp' && trim((string) $merged['smtp_host']) === '') {
+                $errors['smtp_host'] = 'An SMTP host is required when the SMTP transport is selected.';
+            }
+        }
+        if (($merged['provider'] ?? '') === 'rest' && trim((string) $merged['rest_endpoint']) === '') {
+            $errors['rest_endpoint'] = 'A REST endpoint URL is required for the REST provider.';
+        }
+
+        if ($errors !== []) {
+            return $errors;
+        }
+
+        $db = Database::instance();
+        $now = time();
+        foreach ($clean as $key => $value) {
+            $db->upsert('settings', [
+                'skey' => $key,
+                'svalue' => self::encode($schema[$key], $value),
+                'updated_at' => $now,
+            ], 'skey');
+        }
+        self::flushCache();
+        return [];
+    }
+
+    /** Persist a single value, bypassing cross-field validation (internal use). */
+    public static function putRaw(string $key, $value): void
+    {
+        $schema = self::schema();
+        if (!isset($schema[$key])) {
+            throw new \InvalidArgumentException('Unknown setting: ' . $key);
+        }
+        Database::instance()->upsert('settings', [
+            'skey' => $key,
+            'svalue' => self::encode($schema[$key], $value),
+            'updated_at' => time(),
+        ], 'skey');
+        self::flushCache();
+    }
+
+    /**
+     * Make sure the machine-generated tokens exist. Called after install and
+     * on demand from the settings screen.
+     */
+    public static function ensureTokens(): void
+    {
+        foreach (['ingest_token', 'kiosk_token', 'cron_token'] as $key) {
+            if ((string) self::get($key, '') === '') {
+                self::putRaw($key, Crypto::randomToken());
+            }
+        }
+    }
+
+    /** @param array<string,mixed> $meta */
+    private static function coerce(string $key, array $meta, $value)
+    {
+        switch ($meta['type']) {
+            case 'bool':
+                if (is_bool($value)) {
+                    return $value;
+                }
+                if (is_string($value)) {
+                    return in_array(strtolower($value), ['1', 'true', 'on', 'yes'], true);
+                }
+                return (bool) $value;
+
+            case 'int':
+                if (!is_numeric($value)) {
+                    throw new \InvalidArgumentException('Enter a whole number.');
+                }
+                $int = (int) round((float) $value);
+                if (isset($meta['min']) && $int < $meta['min']) {
+                    throw new \InvalidArgumentException(sprintf('Must be %s or more.', $meta['min']));
+                }
+                if (isset($meta['max']) && $int > $meta['max']) {
+                    throw new \InvalidArgumentException(sprintf('Must be %s or less.', $meta['max']));
+                }
+                return $int;
+
+            case 'float':
+                if (!is_numeric($value)) {
+                    throw new \InvalidArgumentException('Enter a number.');
+                }
+                $float = (float) $value;
+                if (isset($meta['min']) && $float < $meta['min']) {
+                    throw new \InvalidArgumentException(sprintf('Must be %s or more.', $meta['min']));
+                }
+                if (isset($meta['max']) && $float > $meta['max']) {
+                    throw new \InvalidArgumentException(sprintf('Must be %s or less.', $meta['max']));
+                }
+                return $float;
+
+            case 'enum':
+                $string = is_scalar($value) ? (string) $value : '';
+                if (!in_array($string, $meta['options'], true)) {
+                    throw new \InvalidArgumentException('Choose one of: ' . implode(', ', $meta['options']) . '.');
+                }
+                return $string;
+
+            case 'csv':
+                $string = is_array($value) ? implode(',', $value) : (string) $value;
+                return implode(',', self::listFrom($string));
+
+            case 'text':
+            case 'string':
+            default:
+                $string = is_scalar($value) ? trim((string) $value) : '';
+                $max = (int) ($meta['max'] ?? 255);
+                if (mb_strlen($string) > $max) {
+                    throw new \InvalidArgumentException(sprintf('Keep this under %d characters.', $max));
+                }
+                return $string;
+        }
+    }
+
+    /** @return array<int,string> */
+    private static function listFrom(string $value): array
+    {
+        $parts = preg_split('/[,\s;]+/', $value) ?: [];
+        return array_values(array_filter(array_map('trim', $parts), static fn(string $p): bool => $p !== ''));
+    }
+
+    /** @param array<string,mixed> $meta */
+    private static function encode(array $meta, $value): string
+    {
+        if ($meta['type'] === 'secret') {
+            return $value === '' ? '' : Crypto::encrypt((string) $value);
+        }
+        if ($meta['type'] === 'bool') {
+            return $value ? '1' : '0';
+        }
+        return (string) $value;
+    }
+
+    /** @param array<string,mixed> $meta */
+    private static function decode(array $meta, string $raw)
+    {
+        switch ($meta['type']) {
+            case 'secret':
+                return $raw === '' ? '' : Crypto::decrypt($raw);
+            case 'bool':
+                return $raw === '1';
+            case 'int':
+                return (int) $raw;
+            case 'float':
+                return (float) $raw;
+            default:
+                return $raw;
+        }
+    }
+}
