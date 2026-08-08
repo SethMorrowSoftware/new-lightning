@@ -107,22 +107,43 @@ running.
 
 cPanel → **Cron Jobs** → **Add New Cron Job**, "Once Per Minute (`* * * * *`)":
 
+**The path is the part that goes wrong.** It is the folder you uploaded to in
+step 1, and for the usual subfolder install that includes `public_html`:
+
 ```
+# Uploaded to /home/USER/public_html/stormwatch/ — the usual case
+* * * * * /usr/local/bin/php /home/USER/public_html/stormwatch/bin/tick.php >/dev/null 2>&1
+* * * * * /usr/local/bin/php /home/USER/public_html/stormwatch/bin/worker.php >/dev/null 2>&1
+
+# Uploaded to /home/USER/stormwatch/ with the document root on public/
 * * * * * /usr/local/bin/php /home/USER/stormwatch/bin/tick.php >/dev/null 2>&1
 * * * * * /usr/local/bin/php /home/USER/stormwatch/bin/worker.php >/dev/null 2>&1
 ```
 
-Replace `/home/USER/stormwatch` with your real path. If `/usr/local/bin/php` is
+`USER` is your cPanel username, not the word "USER". If `/usr/local/bin/php` is
 not the right binary, cPanel's **Terminal** or the top of the Cron Jobs page
 usually shows the correct one; on EasyApache hosts it is often
 `/opt/cpanel/ea-php82/root/usr/bin/php`.
 
 - `tick.php` polls REST feeds, re-evaluates the alert state (so the all-clear
   fires on a quiet feed), and prunes old data. **Always needed.**
-- `worker.php` streams the Blitzortung feed for 50 seconds and exits. It does
-  nothing on other providers, so it is safe to leave installed either way.
+- `worker.php` streams the Blitzortung feed for 50 seconds and exits. On every
+  other provider it exits straight away, so it is safe to leave installed —
+  but if you are on a REST feed such as Xweather, it never has anything to do
+  and you can leave it out.
 
 Both take a lock, so a slow run is skipped rather than piling up.
+
+**Check the line before trusting it.** Run the same command by hand in cPanel's
+Terminal with `-v` on the end. A wrong path or a wrong binary says so
+immediately, whereas cron will fail silently every minute for ever:
+
+```
+/usr/local/bin/php /home/USER/public_html/stormwatch/bin/tick.php -v
+```
+
+It should print a line like `tick ok — ...`. "No such file or directory" means
+the path is wrong; "command not found" means the PHP binary is.
 
 ---
 
