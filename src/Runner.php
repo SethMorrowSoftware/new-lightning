@@ -40,6 +40,22 @@ final class Runner
         $messages = [];
         $ok = true;
 
+        // Outside operating hours there is nobody to warn, and on a metered
+        // feed those polls are most of the bill.
+        if (!Schedule::isMonitoring()) {
+            try {
+                AlertEngine::standDownForClosedHours();
+            } catch (\Throwable $e) {
+                Events::log('system.error', Events::SEVERITY_ERROR, 'Stand-down failed: ' . $e->getMessage(), []);
+            }
+            self::releaseLock('tick');
+            $next = Schedule::nextStart();
+            $message = 'Outside operating hours; monitoring is paused'
+                . ($next !== null ? ' until ' . self::localTime($next) : '') . '.';
+            self::recordRun('tick', $provider, true, 0, $message, $startedAt);
+            return ['ok' => true, 'job' => 'tick', 'ingested' => 0, 'skipped' => true, 'message' => $message];
+        }
+
         try {
             if ($provider === 'rest' && self::restPollDue()) {
                 $result = Rest::poll();
@@ -100,6 +116,16 @@ final class Runner
                 'ingested' => 0,
                 'skipped' => true,
                 'message' => sprintf('The %s provider does not use the streaming worker; nothing to do.', $provider),
+            ];
+        }
+
+        if (!Schedule::isMonitoring()) {
+            return [
+                'ok' => true,
+                'job' => 'worker',
+                'ingested' => 0,
+                'skipped' => true,
+                'message' => 'Outside operating hours; the stream is not being opened.',
             ];
         }
 
@@ -174,8 +200,17 @@ final class Runner
                 : 'This source has not run yet. Check that the cron jobs are installed.';
         }
 
+        $monitoring = Schedule::isMonitoring();
+        $nextStart = $monitoring ? null : Schedule::nextStart();
+
         return [
             'provider' => $provider,
+            'monitoring' => $monitoring,
+            'schedule_enabled' => Schedule::isEnabled(),
+            'schedule_summary' => Schedule::describe(),
+            'next_start' => $nextStart,
+            'next_start_text' => $nextStart !== null ? self::localTime($nextStart) : null,
+            'window_ends' => $monitoring ? Schedule::currentEnd() : null,
             'cron_healthy' => $cronHealthy,
             'cron_last_run' => $lastTick !== null ? (int) $lastTick['started_at'] : null,
             'cron_age_seconds' => $cronAge,
@@ -220,9 +255,32 @@ final class Runner
         Database::instance()->run('DELETE FROM runs WHERE started_at < ?', [time() - (7 * 86400)]);
     }
 
+    /**
+     * Poll slowly when the sky is clear and quickly when it is not.
+     *
+     * On a metered plan this is what makes the sums work: nearly all the time
+     * there is nothing happening, so spending the allowance at a storm's pace
+     * around the clock would exhaust it for no benefit.
+     */
+    public static function restPollInterval(): int
+    {
+        $idle = max(15, Settings::getInt('rest_poll_seconds'));
+        $active = max(15, Settings::getInt('rest_active_poll_seconds'));
+
+        try {
+            $level = AlertEngine::publicState()['level'];
+        } catch (\Throwable $e) {
+            return $idle;
+        }
+
+        // A watch counts as active: that is precisely when the next strike
+        // matters most, and it is the run-up to an alert.
+        return $level === AlertEngine::LEVEL_CLEAR ? $idle : min($idle, $active);
+    }
+
     private static function restPollDue(): bool
     {
-        $interval = max(15, Settings::getInt('rest_poll_seconds'));
+        $interval = self::restPollInterval();
         $last = self::lastRun('poll');
         if ($last === null) {
             return true;
@@ -310,6 +368,14 @@ final class Runner
         flock($handle, LOCK_UN);
         fclose($handle);
         unset(self::$locks[$name]);
+    }
+
+    /** A timestamp in the venue's own time zone, for operator-facing text. */
+    public static function localTime(int $timestamp): string
+    {
+        return (new \DateTimeImmutable('@' . $timestamp))
+            ->setTimezone(Schedule::timezone())
+            ->format('D g:ia');
     }
 
     public static function humanAge(int $seconds): string

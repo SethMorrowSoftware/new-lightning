@@ -458,6 +458,53 @@ final class AlertEngine
         }
     }
 
+    /**
+     * Close out an active alert when the venue's operating hours end.
+     *
+     * Without this the state would simply stop being fed and, once the
+     * cooldown elapsed, announce an all clear derived from no data — a
+     * reassurance nobody checked. Saying "monitoring has ended for the day" is
+     * the honest version, and it leaves the state clean for tomorrow.
+     */
+    public static function standDownForClosedHours(): void
+    {
+        $state = self::state();
+        $notified = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
+
+        if ($notified === self::LEVEL_CLEAR && (string) $state['level'] === self::LEVEL_CLEAR) {
+            return; // nothing outstanding
+        }
+
+        if ($notified !== self::LEVEL_CLEAR) {
+            $nextStart = Schedule::nextStart();
+            $alert = new Alert(
+                Alert::KIND_ALL_CLEAR,
+                sprintf('Monitoring paused at %s', Settings::getString('venue_name')),
+                sprintf(
+                    'The venue is now outside its monitored hours, so lightning tracking has stopped for the day%s. '
+                    . 'This is not an all clear — the last alert was still active when monitoring ended.',
+                    $nextStart !== null
+                        ? ' and resumes ' . (new \DateTimeImmutable('@' . $nextStart))
+                            ->setTimezone(Schedule::timezone())->format('D g:ia')
+                        : ''
+                )
+            );
+            if (Settings::getBool('notify_all_clear')) {
+                self::dispatch($alert);
+            } else {
+                Events::log('alert.stand_down', Events::SEVERITY_INFO, $alert->title, []);
+            }
+        }
+
+        self::updateState([
+            'level' => self::LEVEL_CLEAR,
+            'notified_level' => self::LEVEL_CLEAR,
+            'notified_nearest_mi' => null,
+            'notified_at' => time(),
+            'since' => time(),
+        ]);
+    }
+
     /** Suppress notifications for a number of minutes. */
     public static function mute(int $minutes): int
     {

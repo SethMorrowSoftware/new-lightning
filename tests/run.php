@@ -24,6 +24,7 @@ use StormWatch\Ingest;
 use StormWatch\Migrations;
 use StormWatch\Notifiers\SlackNotifier;
 use StormWatch\Providers\Simulator;
+use StormWatch\Runner;
 use StormWatch\Settings;
 use StormWatch\Strikes;
 use StormWatch\WebSocket\Client;
@@ -619,6 +620,145 @@ T::group('Alert cooldown');
     T::ok(count(Events::recent(200, 'alert.update')) >= 1, 'an opt-in repeat interval still sends updates');
 
     $applyCooldown(30);
+}
+
+T::group('Operating hours');
+{
+    Settings::put([
+        'timezone' => 'America/New_York',
+        'monitor_schedule_enabled' => true,
+        'monitor_lead_minutes' => 30,
+        'monitor_trail_minutes' => 30,
+    ]);
+    // The venue's real hours: open noon daily, closing 10pm Mon–Thu and Sun,
+    // 11pm Fri and Sat.
+    \StormWatch\Schedule::save([
+        'mon' => ['open' => '12:00', 'close' => '22:00'],
+        'tue' => ['open' => '12:00', 'close' => '22:00'],
+        'wed' => ['open' => '12:00', 'close' => '22:00'],
+        'thu' => ['open' => '12:00', 'close' => '22:00'],
+        'fri' => ['open' => '12:00', 'close' => '23:00'],
+        'sat' => ['open' => '12:00', 'close' => '23:00'],
+        'sun' => ['open' => '12:00', 'close' => '22:00'],
+    ]);
+
+    $tz = new DateTimeZone('America/New_York');
+    $at = static function (string $when) use ($tz): int {
+        return (new DateTimeImmutable($when, $tz))->getTimestamp();
+    };
+    $monitoring = static function (string $when) use ($at): bool {
+        return \StormWatch\Schedule::isMonitoring($at($when));
+    };
+
+    T::same(false, $monitoring('2026-08-10 09:00'), 'Monday morning is outside the window');
+    T::same(true, $monitoring('2026-08-10 11:35'), 'the pre-open buffer counts as monitored');
+    T::same(false, $monitoring('2026-08-10 11:25'), 'but not before the buffer starts');
+    T::same(true, $monitoring('2026-08-10 15:00'), 'the middle of a Monday is monitored');
+    T::same(true, $monitoring('2026-08-10 22:25'), 'the post-close buffer counts as monitored');
+    T::same(false, $monitoring('2026-08-10 22:40'), 'and stops after it');
+    T::same(true, $monitoring('2026-08-14 23:20'), 'Friday runs an hour later');
+    T::same(false, $monitoring('2026-08-13 23:20'), 'Thursday at the same time does not');
+    T::same(false, $monitoring('2026-08-15 03:00'), 'the small hours are never monitored');
+
+    $next = \StormWatch\Schedule::nextStart($at('2026-08-10 09:00'));
+    T::same('11:30', $next === null ? 'none' : (new DateTimeImmutable('@' . $next))->setTimezone($tz)->format('H:i'), 'the next start is the buffered opening time');
+    T::same(null, \StormWatch\Schedule::nextStart($at('2026-08-10 15:00')), 'no next start while already monitoring');
+
+    // A closing time past midnight belongs to the day it started.
+    \StormWatch\Schedule::save(['fri' => ['open' => '18:00', 'close' => '01:00']] + \StormWatch\Schedule::all());
+    Settings::put(['monitor_lead_minutes' => 0, 'monitor_trail_minutes' => 0]);
+    T::same(true, $monitoring('2026-08-15 00:30'), 'a small-hours closing time still belongs to Friday');
+    T::same(false, $monitoring('2026-08-15 01:30'), 'and ends when it should');
+
+    // A closed day is genuinely off.
+    $schedule = \StormWatch\Schedule::all();
+    $schedule['sun'] = ['closed' => true, 'open' => '12:00', 'close' => '22:00'];
+    \StormWatch\Schedule::save($schedule);
+    T::same(false, $monitoring('2026-08-16 15:00'), 'a day marked closed is not monitored');
+
+    T::ok(\StormWatch\Schedule::hoursPerWeek() < 168, 'a schedule covers less than the whole week');
+
+    // Switched off, the schedule must never reduce coverage.
+    Settings::put(['monitor_schedule_enabled' => false]);
+    T::same(true, $monitoring('2026-08-16 03:00'), 'with the schedule off, monitoring is round the clock');
+    T::same(168.0, \StormWatch\Schedule::hoursPerWeek(), 'and covers the whole week');
+
+    // Closing time must resolve an outstanding alert rather than leave it to
+    // decay into an all clear derived from no data.
+    resetData();
+    Settings::put(['monitor_schedule_enabled' => true, 'notify_all_clear' => true]);
+    placeStrike(4.0, 88.0);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'an alert is running at closing time');
+    AlertEngine::standDownForClosedHours();
+    T::same('clear', AlertEngine::publicState()['level'], 'the stand-down resolves the state');
+    T::ok(count(Events::recent(50, 'alert.all_clear')) >= 1, 'and says monitoring has stopped for the day');
+    $before = count(Events::recent(50, 'alert.'));
+    AlertEngine::standDownForClosedHours();
+    T::same($before, count(Events::recent(50, 'alert.')), 'standing down twice announces nothing further');
+
+    Settings::put(['monitor_schedule_enabled' => false]);
+}
+
+T::group('Metered API budget');
+{
+    $meter = 'test-meter';
+    Settings::put(['api_monthly_budget' => 100]);
+    Database::instance()->run('DELETE FROM api_usage');
+
+    T::same(0, \StormWatch\ApiBudget::usage($meter)['tokens'], 'a fresh period starts at zero');
+    \StormWatch\ApiBudget::record($meter, 1);
+    \StormWatch\ApiBudget::record($meter, 4);
+    $usage = \StormWatch\ApiBudget::usage($meter);
+    T::same(2, $usage['requests'], 'requests are counted');
+    T::same(5, $usage['tokens'], 'and so is what the provider charged, which is not always one');
+    T::same(95, \StormWatch\ApiBudget::remaining($meter), 'the remaining allowance follows the tokens');
+    T::same(false, \StormWatch\ApiBudget::isExhausted($meter), 'not exhausted yet');
+
+    \StormWatch\ApiBudget::record($meter, 95);
+    T::same(true, \StormWatch\ApiBudget::isExhausted($meter), 'exhausted once the allowance is spent');
+
+    Settings::put(['api_monthly_budget' => 0]);
+    T::same(null, \StormWatch\ApiBudget::remaining($meter), 'a budget of zero means unmetered');
+    T::same(false, \StormWatch\ApiBudget::isExhausted($meter), 'and can never be exhausted');
+
+    // Usage is per calendar month, so a new period starts clean.
+    Settings::put(['api_monthly_budget' => 100]);
+    $lastMonth = \StormWatch\ApiBudget::period(strtotime('-2 months'));
+    T::same(0, \StormWatch\ApiBudget::usage($meter, $lastMonth)['tokens'], 'a different period is separate');
+
+    // The projection is what the settings screen uses to warn before the fact.
+    $cost = \StormWatch\ApiBudget::projectMonthlyCost(300, 60, 10.0);
+    T::ok($cost > 0 && $cost < 15000, 'five-minute polling projects inside the free tier');
+    $expensive = \StormWatch\ApiBudget::projectMonthlyCost(60, 60, 10.0);
+    T::ok($expensive > 15000, 'once-a-minute polling round the clock does not');
+
+    Database::instance()->run('DELETE FROM api_usage');
+    Settings::put(['api_monthly_budget' => 15000]);
+}
+
+T::group('Adaptive polling');
+{
+    resetData();
+    Settings::put(['rest_poll_seconds' => 300, 'rest_active_poll_seconds' => 60]);
+
+    AlertEngine::evaluate(false);
+    T::same(300, Runner::restPollInterval(), 'a clear sky polls at the quiet cadence');
+
+    placeStrike(4.0, 99.0);
+    AlertEngine::evaluate(false);
+    T::same(60, Runner::restPollInterval(), 'an active alert polls at the storm cadence');
+
+    resetData();
+    placeStrike(15.0, 99.0);
+    AlertEngine::evaluate(false);
+    T::same(60, Runner::restPollInterval(), 'a watch also counts as active — it is the run-up to an alert');
+
+    // The active cadence must never be slower than the quiet one.
+    Settings::put(['rest_poll_seconds' => 60, 'rest_active_poll_seconds' => 600]);
+    T::same(60, Runner::restPollInterval(), 'a misconfigured active cadence never slows things down');
+    Settings::put(['rest_poll_seconds' => 300, 'rest_active_poll_seconds' => 60]);
+    resetData();
 }
 
 T::group('Concurrent evaluation');

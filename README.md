@@ -153,6 +153,76 @@ returns a list of recent strikes. The endpoint URL accepts `{lat}`, `{lon}`,
 including Slack delivery, before real weather arrives. The settings screen
 warns while it is selected; never leave it on in production.
 
+### Xweather
+
+Settings → **Data source** → **REST endpoint**, then pick **Xweather** from the
+Quick setup list. That fills in the endpoint, the field mapping, the poll
+intervals and the allowance; you add the credentials and press Save.
+
+Xweather issues a **pair** of credentials, not a single key. The client ID goes
+in the key field and the client secret in the secret field, sent as
+`client_id` and `client_secret`. The preset uses the lightning endpoint with
+`filter=all`, so both cloud-to-ground and intracloud strikes are returned:
+
+```
+https://data.api.xweather.com/lightning/closest
+  ?p={lat},{lon}&radius={radius_mi}miles&filter=all&limit=100&format=json
+```
+
+The response maps as `response` → `loc.lat` / `loc.long` / `ob.timestamp`.
+Press **Test this source** after saving — it prints the first record it got
+back, so a mismatch is immediately obvious rather than a silent zero.
+
+**Staying inside the free tier.** The free plan is 15,000 accesses a month.
+A once-a-minute poll around the clock is about 43,000, so it has to be shaped:
+
+| Lever | Effect |
+|---|---|
+| Operating hours (below) | Roughly halves it — a venue open 12 hours a day is monitored half the time |
+| Slow poll when quiet | 5 minutes instead of 1 cuts the rest by five |
+| Fast poll during a storm | 1 minute, but only while a watch or alert is running |
+
+With the venue's hours applied and the default 5 minute / 1 minute pair, a
+month comes to roughly **4,000–5,000 accesses**. The Data source tab shows the
+projection as you change the numbers, and refuses to leave you guessing:
+
+> Projected use: about 4,300 accesses a month — polling every 300s while quiet
+> and every 60s during a storm, across 350 monitored hours (your operating
+> hours), assuming 10 hours of storm activity. That fits inside your 15,000
+> allowance.
+
+Usage is counted from the `X-Cost-Tokens` header Xweather returns, not from a
+request count, because a request does not always cost one access — the price is
+the product of endpoint, area and time-range multipliers.
+
+If the allowance does run out, polling pauses and you get a **feed failure
+alert**. It never stops quietly.
+
+## Operating hours
+
+Settings → **Alert rules** → **Operating hours**. Set the venue's open and
+close time for each day, mark any closed days, and monitoring runs only inside
+those windows — plus a buffer either side, because staff arrive before opening
+and are still clearing up afterwards.
+
+This is worth doing even on a free data source: it stops alerts firing at 3am
+when nobody is on site. On a metered API it is the single biggest saving.
+
+The panel shows what the schedule adds up to:
+
+> Mon–Thu 12pm–10pm, Fri–Sat 12pm–11pm, Sun 12pm–10pm, plus 30 min before and
+> 30 min after. That is 79 hours a week out of 168 — 47% of the polling a
+> round-the-clock setup would do.
+
+Times are wall-clock in the venue's time zone, so they keep meaning the same
+thing across a daylight-saving change, and a closing time earlier than the
+opening time is treated as after midnight.
+
+If a lightning alert is still active when the venue closes, Storm Watch posts
+**"Monitoring paused"** rather than letting the alert decay into an all clear
+derived from no data — an all clear nobody checked is worse than none. The
+dashboard says the same thing instead of showing a misleading green banner.
+
 > Lightning detection networks are an aid, not a guarantee. Keep your venue's
 > severe weather policy as the authority and treat this as one input to it.
 
@@ -223,6 +293,7 @@ so there is no guessing about what the configuration adds up to.
 | Cooldown scope | Alert radius | Which strikes keep the cooldown running |
 | Repeat the alert every | Off | Opt-in reminder while the hold is in force |
 | Re-alert if closer by | Off | Opt-in update if the storm heads straight at you |
+| Operating hours | Off | Monitor only while the venue is open (see below) |
 
 Ten miles and thirty minutes are the common choices for outdoor venues:
 lightning routinely strikes that far from its parent storm, and the thirty
@@ -338,7 +409,10 @@ into external monitoring.
 | Slack test says `not_in_channel` | Invite the bot: `/invite @YourBot` in that channel. |
 | Slack test says `channel_not_found` | Use the channel ID rather than the name. |
 | Slack test says `missing_scope` | Add `chat:write` under OAuth & Permissions, then reinstall the app. |
-| Blitzortung test cannot connect | The host blocks outbound port 3000. Switch to the browser relay or a REST feed. |
+| Blitzortung test cannot connect | The host blocks outbound port 3000. Switch to the browser relay or a REST feed. The test checks the port first and says so within a few seconds. |
+| Blitzortung test seems to hang | It should now answer in under 5 seconds when the port is blocked, and within about 10 when it is open. If the button still spins, the browser gives up at 45 seconds and tells you — that pattern means the host is silently dropping the connection rather than refusing it, so use the browser relay. |
+| "This month's API allowance is used up" | Exactly that. Raise the budget on the Data source tab, slow the quiet poll down, or narrow the operating hours. Polling resumes on its own next month. |
+| Alerts stop overnight | Expected if operating hours are switched on. The dashboard says "Monitoring paused" and when it resumes. |
 | No strikes appear at all | Often there is simply no lightning within 30 miles. Press **Simulate strike** to confirm the pipeline works. |
 | Email never arrives | Switch to SMTP and use a real mailbox on the domain as the "from" address. |
 | The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |

@@ -128,26 +128,49 @@ final class Blitzortung
      *
      * @return array{ok:bool,message:string,detail:array<string,mixed>}
      */
-    public static function test(int $seconds = 12): array
+    public static function test(int $seconds = 10): array
     {
         $servers = self::servers();
         if ($servers === []) {
             return ['ok' => false, 'message' => 'No Blitzortung servers are configured.', 'detail' => []];
         }
         $server = $servers[0];
-        $url = sprintf('wss://%s.blitzortung.org:%d/', $server, self::PORT);
+        $host = $server . '.blitzortung.org';
+        $startedAt = microtime(true);
+
+        // Cheap reachability check first. A host that blocks outbound port 3000
+        // is the common failure, and it should be reported in a couple of
+        // seconds rather than after a full listening window — waiting twenty
+        // seconds for a verdict is indistinguishable from the page hanging.
+        $reachable = self::portIsReachable($host, self::PORT, 4.0);
+        if ($reachable !== true) {
+            return [
+                'ok' => false,
+                'message' => sprintf('Could not reach %s on port %d: %s', $host, self::PORT, $reachable),
+                'detail' => [
+                    'server' => $server,
+                    'elapsed_seconds' => round(microtime(true) - $startedAt, 1),
+                    'hint' => 'Blitzortung streams on port ' . self::PORT . ', and many shared hosts allow only 80 and 443 '
+                        . 'outbound. Ask your host to open it, or switch the provider to "Browser relay" — same free data, '
+                        . 'fetched by a browser tab instead of the server.',
+                ],
+            ];
+        }
+
+        $url = sprintf('wss://%s:%d/', $host, self::PORT);
         $deadline = microtime(true) + $seconds;
 
         try {
-            $client = Client::connect($url, ['origin' => self::ORIGIN, 'timeout' => 8.0]);
+            $client = Client::connect($url, ['origin' => self::ORIGIN, 'timeout' => 6.0]);
         } catch (\Throwable $e) {
             return [
                 'ok' => false,
-                'message' => 'Could not connect: ' . $e->getMessage(),
+                'message' => 'The port is open but the connection failed: ' . $e->getMessage(),
                 'detail' => [
                     'server' => $server,
-                    'hint' => 'Blitzortung uses port ' . self::PORT . '. Many shared hosts allow only ports 80 and 443 outbound. '
-                        . 'If this keeps failing, switch the provider to "Browser relay" or use a REST provider.',
+                    'elapsed_seconds' => round(microtime(true) - $startedAt, 1),
+                    'hint' => 'The TCP port answered, so this is not a firewall. It is more likely TLS interception or a '
+                        . 'change to the feed\'s undocumented protocol. Try another server in the list, or use "Browser relay".',
                 ],
             ];
         }
@@ -193,7 +216,7 @@ final class Blitzortung
         if ($frames === 0) {
             return [
                 'ok' => false,
-                'message' => 'Connected to ' . $server . ' but received no strike frames within ' . $seconds . ' seconds.',
+                'message' => sprintf('Connected to %s but received no strike frames in %.0f seconds.', $server, microtime(true) - $startedAt),
                 'detail' => ['server' => $server, 'hint' => 'The feed only carries live strikes. During calm weather worldwide this can genuinely be quiet, but it is usually busy.'],
             ];
         }
@@ -201,14 +224,19 @@ final class Blitzortung
         return [
             'ok' => true,
             'message' => sprintf(
-                'Connected to %s and read %d live strike%s in %d seconds (%d within your display radius).',
+                'Connected to %s and read %d live strike%s in %.0f seconds (%d within your display radius).',
                 $server,
                 $frames,
                 $frames === 1 ? '' : 's',
-                $seconds,
+                microtime(true) - $startedAt,
                 $nearby
             ),
-            'detail' => ['server' => $server, 'frames' => $frames, 'sample' => $sample],
+            'detail' => [
+                'server' => $server,
+                'frames' => $frames,
+                'elapsed_seconds' => round(microtime(true) - $startedAt, 1),
+                'sample' => $sample,
+            ],
         ];
     }
 
@@ -246,6 +274,34 @@ final class Blitzortung
         }
 
         return ['lat' => $lat, 'lon' => $lon, 'ts' => $ts, 'distance_mi' => $distance];
+    }
+
+    /**
+     * Can we open a plain TCP connection to the feed's port?
+     *
+     * @return true|string true, or the reason it failed
+     */
+    public static function portIsReachable(string $host, int $port, float $timeout)
+    {
+        $errno = 0;
+        $errstr = '';
+        $socket = @stream_socket_client(
+            sprintf('tcp://%s:%d', $host, $port),
+            $errno,
+            $errstr,
+            $timeout,
+            STREAM_CLIENT_CONNECT
+        );
+        if ($socket === false) {
+            if ($errno === 0 && $errstr === '') {
+                // A silent failure at the timeout is what a firewall that
+                // drops packets rather than refusing them looks like.
+                return sprintf('no response within %.0f seconds (the connection was not refused, it was ignored)', $timeout);
+            }
+            return $errstr !== '' ? $errstr : ('error ' . $errno);
+        }
+        fclose($socket);
+        return true;
     }
 
     /** @return array<int,string> */

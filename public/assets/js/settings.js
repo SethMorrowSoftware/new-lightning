@@ -42,6 +42,165 @@
     syncSlack();
   }
 
+  /* ---- Known providers. Filling these in by hand from the API docs is
+         where a REST integration usually goes wrong. ---- */
+  var PRESETS = {
+    xweather: {
+      label: 'Xweather — lightning, all strike types',
+      endpoint: 'https://data.api.xweather.com/lightning/closest'
+        + '?p={lat},{lon}&radius={radius_mi}miles&filter=all&limit=100&format=json',
+      auth: 'client_pair',
+      authName: 'client_id',
+      secretName: 'client_secret',
+      root: 'response',
+      lat: 'loc.lat',
+      lon: 'loc.long',
+      time: 'ob.timestamp',
+      timeFormat: 'epoch_s',
+      idle: 300,
+      active: 60,
+      budget: 15000,
+      note: 'Uses the lightning endpoint with <code>filter=all</code>, so both cloud-to-ground and '
+        + 'intracloud strikes are returned. Put your <b>client ID</b> in the key field and your '
+        + '<b>client secret</b> in the secret field — Xweather issues a pair, not a single key. '
+        + 'The free tier is 15,000 accesses a month; the poll intervals and allowance have been set '
+        + 'to fit inside it. Press <b>Test this source</b> after saving: it reports the first record '
+        + 'returned, so any mismatch in the field mapping is obvious.'
+    },
+    xweather_within: {
+      label: 'Xweather — lightning within a radius',
+      endpoint: 'https://data.api.xweather.com/lightning/within'
+        + '?p={lat},{lon}&radius={radius_mi}miles&filter=all&limit=100&format=json',
+      auth: 'client_pair',
+      authName: 'client_id',
+      secretName: 'client_secret',
+      root: 'response',
+      lat: 'loc.lat',
+      lon: 'loc.long',
+      time: 'ob.timestamp',
+      timeFormat: 'epoch_s',
+      idle: 300,
+      active: 60,
+      budget: 15000,
+      note: 'Same credentials and mapping as the option above, using the <code>within</code> action '
+        + 'instead of <code>closest</code>. Try this one if <code>closest</code> returns strikes from '
+        + 'further away than you expect.'
+    }
+  };
+
+  var presetSelect = document.getElementById('restPreset');
+  if (presetSelect) {
+    presetSelect.addEventListener('change', function () {
+      var preset = PRESETS[presetSelect.value];
+      var note = document.getElementById('presetNote');
+      if (!preset) {
+        if (note) note.style.display = 'none';
+        return;
+      }
+      var set = function (id, value) {
+        var input = document.getElementById(id);
+        if (input) input.value = value;
+      };
+      set('rest_endpoint', preset.endpoint);
+      set('rest_auth_mode', preset.auth);
+      set('rest_auth_name', preset.authName);
+      set('rest_auth_secret_name', preset.secretName);
+      set('rest_map_root', preset.root);
+      set('rest_map_lat', preset.lat);
+      set('rest_map_lon', preset.lon);
+      set('rest_map_time', preset.time);
+      set('rest_time_format', preset.timeFormat);
+      set('rest_poll_seconds', preset.idle);
+      set('rest_active_poll_seconds', preset.active);
+      set('api_monthly_budget', preset.budget);
+
+      var mode = document.getElementById('rest_auth_mode');
+      if (mode) mode.dispatchEvent(new Event('change'));
+
+      if (note) {
+        note.style.display = '';
+        note.innerHTML = '<b>' + escapeHtml(preset.label) + '.</b> ' + preset.note
+          + '<br><br>Your credentials were not touched. Nothing is saved until you press '
+          + '<b>Save data source</b>.';
+      }
+      renderCostProjection();
+    });
+  }
+
+  // ---- Auth: the second credential only exists for ID+secret providers ----
+  var authMode = document.getElementById('rest_auth_mode');
+  if (authMode) {
+    var syncAuth = function () {
+      var pair = authMode.value === 'client_pair';
+      var secretField = document.getElementById('restSecretField');
+      var secretName = document.getElementById('secretNameField');
+      if (secretField) secretField.style.display = pair ? '' : 'none';
+      if (secretName) secretName.style.display = pair ? '' : 'none';
+      var keyLabel = document.getElementById('restKeyLabel');
+      if (keyLabel) keyLabel.textContent = pair ? 'Client ID' : 'API key';
+    };
+    authMode.addEventListener('change', syncAuth);
+    syncAuth();
+  }
+
+  /* ---- Will this polling pattern fit the plan? Answer before it is saved,
+         not at the end of the month. ---- */
+  function renderCostProjection() {
+    var box = document.getElementById('costProjection');
+    if (!box) return;
+
+    var num = function (id, fallback) {
+      var input = document.getElementById(id);
+      var value = input ? parseFloat(input.value) : NaN;
+      return isNaN(value) || value <= 0 ? fallback : value;
+    };
+    var idle = num('rest_poll_seconds', 300);
+    var active = num('rest_active_poll_seconds', 60);
+    var budget = num('api_monthly_budget', 0);
+
+    var hoursPerWeek = config.scheduleEnabled ? (config.monitoredHoursPerWeek || 168) : 168;
+    var monitoredHoursPerMonth = hoursPerWeek * (365 / 12 / 7);
+    var stormHours = 10; // a working assumption, stated in the text
+    var quietHours = Math.max(0, monitoredHoursPerMonth - stormHours);
+    var monthly = Math.round((quietHours * 3600 / idle) + (stormHours * 3600 / active));
+
+    var fits = budget === 0 || monthly <= budget;
+    var text = '<b>Projected use:</b> about <b>' + monthly.toLocaleString() + '</b> accesses a month'
+      + ' — polling every ' + Math.round(idle) + 's while quiet and every ' + Math.round(active)
+      + 's during a storm, across ' + Math.round(monitoredHoursPerMonth) + ' monitored hours'
+      + (config.scheduleEnabled ? ' (your operating hours)' : ' (round the clock)')
+      + ', assuming ' + stormHours + ' hours of storm activity.';
+
+    if (budget > 0) {
+      text += fits
+        ? '<br>That fits inside your ' + budget.toLocaleString() + ' allowance.'
+        : '<br><span style="color:var(--danger);">That exceeds your ' + budget.toLocaleString()
+          + ' allowance. Slow the quiet poll down, or restrict the operating hours on the Alert rules tab.</span>';
+    }
+
+    box.className = 'notice' + (fits ? '' : ' err');
+    box.innerHTML = text;
+  }
+
+  ['rest_poll_seconds', 'rest_active_poll_seconds', 'api_monthly_budget'].forEach(function (id) {
+    var input = document.getElementById(id);
+    if (!input) return;
+    input.addEventListener('input', renderCostProjection);
+    input.addEventListener('change', renderCostProjection);
+  });
+  renderCostProjection();
+
+  // ---- Schedule grid is only relevant when the schedule is switched on ----
+  var scheduleToggle = document.getElementById('monitor_schedule_enabled');
+  if (scheduleToggle) {
+    var syncSchedule = function () {
+      var fields = document.getElementById('scheduleFields');
+      if (fields) fields.style.opacity = scheduleToggle.checked ? '1' : '0.55';
+    };
+    scheduleToggle.addEventListener('change', syncSchedule);
+    syncSchedule();
+  }
+
   // ---- Email: SMTP fields only when SMTP is selected ----
   var transport = document.getElementById('email_transport');
   if (transport) {
@@ -144,33 +303,77 @@
     });
   }
 
+  // A connection test talks to a remote service, so it is slow by nature.
+  // Count up while it runs and give up on our own terms: a button that spins
+  // forever is indistinguishable from a broken page.
+  var TEST_TIMEOUT_MS = 45000;
+
   document.querySelectorAll('[data-test]').forEach(function (button) {
     button.addEventListener('click', function () {
       var action = button.getAttribute('data-test');
       var original = button.textContent;
+      var box = document.getElementById('testResult');
+      var started = Date.now();
       button.disabled = true;
+
+      var tick = setInterval(function () {
+        var seconds = Math.round((Date.now() - started) / 1000);
+        button.innerHTML = '<span class="spinner"></span> Testing… ' + seconds + 's';
+      }, 1000);
       button.innerHTML = '<span class="spinner"></span> Testing…';
 
-      var box = document.getElementById('testResult');
       if (box) {
-        box.innerHTML = '<div class="notice">Save your changes first if you have edited anything — '
-          + 'the test uses the settings currently stored.</div>';
+        box.innerHTML = '<div class="notice">Contacting the data source. This can take up to '
+          + Math.round(TEST_TIMEOUT_MS / 1000) + ' seconds — a host that blocks the connection is '
+          + 'slow to say so.<br>If you have just edited anything, save first: the test uses the '
+          + 'settings currently stored.</div>';
       }
 
-      fetch(config.actionUrl, {
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer = setTimeout(function () {
+        if (controller) controller.abort();
+      }, TEST_TIMEOUT_MS);
+
+      var options = {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': config.csrf },
         body: JSON.stringify({ action: action })
-      })
-        .then(function (response) { return response.json(); })
+      };
+      if (controller) options.signal = controller.signal;
+
+      fetch(config.actionUrl, options)
+        .then(function (response) {
+          return response.text().then(function (text) {
+            try {
+              return JSON.parse(text);
+            } catch (e) {
+              // A PHP fatal or a proxy timeout page, not JSON.
+              return {
+                ok: false,
+                message: 'The server returned an unreadable response (HTTP ' + response.status + '). '
+                  + 'If this keeps happening the test is probably exceeding the host\'s time limit.',
+                detail: { hint: text.slice(0, 300) }
+              };
+            }
+          });
+        })
         .then(function (data) {
           renderResult(!!data.ok, data.message || data.error || 'No response.', data.detail);
         })
         .catch(function (error) {
-          renderResult(false, 'The request failed: ' + error.message);
+          if (error && error.name === 'AbortError') {
+            renderResult(false, 'The test did not finish within '
+              + Math.round(TEST_TIMEOUT_MS / 1000) + ' seconds and was stopped. '
+              + 'That usually means the host is silently dropping the connection rather than refusing it.',
+              { hint: 'Try the "Browser relay" provider, which fetches the same data from a browser tab instead of the server.' });
+          } else {
+            renderResult(false, 'The request failed: ' + (error ? error.message : 'unknown error'));
+          }
         })
         .then(function () {
+          clearInterval(tick);
+          clearTimeout(timer);
           button.disabled = false;
           button.textContent = original;
         });

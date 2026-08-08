@@ -44,6 +44,13 @@ final class Settings
             // operator asking for a cooldown is trying to avoid.
             'realert_minutes'   => ['type' => 'int', 'default' => 0, 'min' => 0, 'max' => 240],
             'closer_delta_mi'   => ['type' => 'float', 'default' => 0.0, 'min' => 0, 'max' => 100],
+            // Operating hours. Off by default: a venue that has not configured
+            // its hours should be monitored around the clock, never less.
+            'monitor_schedule_enabled' => ['type' => 'bool', 'default' => false],
+            'monitor_schedule'  => ['type' => 'text', 'default' => '', 'max' => 2000],
+            'monitor_lead_minutes'  => ['type' => 'int', 'default' => 30, 'min' => 0, 'max' => 480],
+            'monitor_trail_minutes' => ['type' => 'int', 'default' => 30, 'min' => 0, 'max' => 480],
+
             'notify_watch'      => ['type' => 'bool', 'default' => false],
             'notify_all_clear'  => ['type' => 'bool', 'default' => true],
             'notify_errors'     => ['type' => 'bool', 'default' => true],
@@ -78,10 +85,22 @@ final class Settings
             'blitz_init_json'  => ['type' => 'string', 'default' => '{"a":111}', 'max' => 200],
             'rest_endpoint'    => ['type' => 'string', 'default' => '', 'max' => 500],
             'rest_api_key'     => ['type' => 'secret', 'default' => ''],
-            'rest_auth_mode'   => ['type' => 'enum', 'default' => 'query', 'options' => ['none', 'query', 'header', 'bearer']],
+            // Xweather and similar issue a pair of credentials rather than one key.
+            'rest_api_secret'  => ['type' => 'secret', 'default' => ''],
+            'rest_auth_mode'   => ['type' => 'enum', 'default' => 'query', 'options' => ['none', 'query', 'header', 'bearer', 'client_pair']],
             'rest_auth_name'   => ['type' => 'string', 'default' => 'apikey', 'max' => 80],
+            'rest_auth_secret_name' => ['type' => 'string', 'default' => 'client_secret', 'max' => 80],
             'rest_extra_headers' => ['type' => 'text', 'default' => '', 'max' => 2000],
-            'rest_poll_seconds' => ['type' => 'int', 'default' => 60, 'min' => 15, 'max' => 3600],
+            // Idle cadence. During a storm the active cadence below is used —
+            // that is what keeps a metered plan affordable without being slow
+            // to notice the first strike.
+            'rest_poll_seconds' => ['type' => 'int', 'default' => 300, 'min' => 15, 'max' => 3600],
+            'rest_active_poll_seconds' => ['type' => 'int', 'default' => 60, 'min' => 15, 'max' => 3600],
+            // Records older than this are ignored, so an endpoint that returns
+            // history cannot raise an alert for a storm that has long passed.
+            'rest_max_age_minutes' => ['type' => 'int', 'default' => 20, 'min' => 1, 'max' => 1440],
+            // 0 means unmetered. 15,000 is the Xweather free tier.
+            'api_monthly_budget' => ['type' => 'int', 'default' => 15000, 'min' => 0, 'max' => 100000000],
             'rest_map_root'    => ['type' => 'string', 'default' => 'data', 'max' => 120],
             'rest_map_lat'     => ['type' => 'string', 'default' => 'lat', 'max' => 120],
             'rest_map_lon'     => ['type' => 'string', 'default' => 'lon', 'max' => 120],
