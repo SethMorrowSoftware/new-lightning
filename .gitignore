@@ -1,0 +1,14 @@
+# Installation-specific — never commit these.
+/config/config.php
+
+# Runtime data: database, logs, locks, provider state.
+/data/*
+!/data/.htaccess
+!/data/.gitkeep
+
+# Editors and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

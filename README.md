@@ -1,0 +1,358 @@
+# Storm Watch
+
+Lightning detection and alerting for a single venue. A live map of nearby
+strikes, a configurable alert radius, and Slack and email alerts sent by the
+server — so the venue is told about lightning whether or not anyone has a
+browser open.
+
+Built to run on ordinary shared cPanel hosting: PHP 8, Apache, and either a
+SQLite file or a MySQL database. No Composer, no Node build step, nothing to
+compile.
+
+---
+
+## What this is, and what it replaces
+
+This started as `castle-storm-watch_5.html` — a single-file demo with a
+simulated storm cell. That demo looked right but could not actually alert
+anyone: everything lived in the browser tab, so closing the tab ended the
+monitoring, and the Slack and email fields were placeholders.
+
+Storm Watch keeps the demo's design and moves the work to the server:
+
+| | Demo | Storm Watch |
+|---|---|---|
+| Lightning data | Simulated in the tab | Blitzortung, a commercial REST feed, a browser relay, or the simulator |
+| Alerting | A toast in the open tab | Slack and email from cron, plus browser notifications |
+| Alert state | Lost on refresh | Stored, with a proper all-clear timer |
+| Settings | `localStorage` on one device | Database-backed, shared by everyone, secrets encrypted |
+| Access | Anyone with the URL | Accounts, sessions, CSRF, login throttling |
+| Health | None | Feed and cron monitoring that alerts you when data stops |
+
+The original demo file is kept in the repository for reference.
+
+---
+
+## Requirements
+
+- PHP 8.0 or newer with `pdo_sqlite` **or** `pdo_mysql`
+- `openssl` and either `curl` or `allow_url_fopen`
+- The ability to run a cron job once a minute (or an external cron service —
+  see [Web cron](#no-cron-jobs-web-cron-instead))
+
+Every mainstream cPanel host meets this. The setup wizard checks each item and
+tells you exactly what is missing.
+
+---
+
+## Installing on cPanel
+
+### 1. Upload
+
+Two layouts work. **A** is more secure and is what you should use if your host
+lets you set a document root — which cPanel does for any addon domain or
+subdomain.
+
+**Layout A — recommended.** Put the application outside the web root:
+
+```
+/home/USER/stormwatch/          <- upload the whole repository here
+/home/USER/stormwatch/public/   <- point the document root here
+```
+
+In cPanel: **Domains** → **Create A New Domain** (or edit an existing one) and
+set the document root to `/home/USER/stormwatch/public`.
+
+**Layout B — no document root control.** Upload the whole repository into a
+folder under `public_html`:
+
+```
+/home/USER/public_html/stormwatch/
+```
+
+Then visit `https://yourdomain.com/stormwatch/`. The included root `.htaccess`
+forwards requests into `public/` and blocks `config/`, `data/`, `src/`, `bin/`
+and `tests/`. This relies on `mod_rewrite`, which cPanel enables by default.
+
+### 2. Permissions
+
+`config/` and `data/` must be writable by PHP. In cPanel **File Manager**,
+select each folder → **Permissions** → `0755` (some hosts need `0775`).
+
+### 3. Run the wizard
+
+Open the site in a browser. You will land on the setup wizard, which checks the
+server, then asks for:
+
+- **Database** — SQLite (nothing to set up) or MySQL. For MySQL, create the
+  database and user first in cPanel → **MySQL® Databases**, and give the user
+  **All Privileges**.
+- **Administrator** — the account you will sign in with.
+- **Venue** — name, address, latitude, longitude and time zone. Get the
+  coordinates by looking up the address on any mapping site; every distance in
+  the system is measured from that point.
+
+The wizard writes `config/config.php`, creates the tables, and signs you in.
+
+### 4. Install the cron jobs
+
+This is the step that makes alerting work. Without it the dashboard still
+draws, but nothing is ever sent. The dashboard says so in red when cron is not
+running.
+
+cPanel → **Cron Jobs** → **Add New Cron Job**, "Once Per Minute (`* * * * *`)":
+
+```
+* * * * * /usr/local/bin/php /home/USER/stormwatch/bin/tick.php >/dev/null 2>&1
+* * * * * /usr/local/bin/php /home/USER/stormwatch/bin/worker.php >/dev/null 2>&1
+```
+
+Replace `/home/USER/stormwatch` with your real path. If `/usr/local/bin/php` is
+not the right binary, cPanel's **Terminal** or the top of the Cron Jobs page
+usually shows the correct one; on EasyApache hosts it is often
+`/opt/cpanel/ea-php82/root/usr/bin/php`.
+
+- `tick.php` polls REST feeds, re-evaluates the alert state (so the all-clear
+  fires on a quiet feed), and prunes old data. **Always needed.**
+- `worker.php` streams the Blitzortung feed for 50 seconds and exits. It does
+  nothing on other providers, so it is safe to leave installed either way.
+
+Both take a lock, so a slow run is skipped rather than piling up.
+
+---
+
+## Choosing a data source
+
+Settings → **Data source**. Press **Test this source** after any change; it
+reports precisely what happened.
+
+**Blitzortung live feed** — free, worldwide, run by a volunteer network of
+receivers. The server connects directly. This is the best default. Its one
+catch is that the feed uses port 3000, and some shared hosts only allow
+outbound 80 and 443. The test will tell you within seconds if that is your
+situation.
+
+**Browser relay** — the same free Blitzortung data, fetched by a browser tab
+instead of the server, then posted back. Use this when the direct feed is
+blocked. It needs a tab left open somewhere that stays on; the venue's wall
+display is ideal. Alerts are still sent by the server, so Slack keeps working
+normally — only the data collection depends on the tab.
+
+**REST endpoint** — for a commercial feed with a support contract behind it.
+Configure the URL, how the API key is sent, and a dot-path mapping from the
+response to latitude, longitude and time. It works with any JSON API that
+returns a list of recent strikes. The endpoint URL accepts `{lat}`, `{lon}`,
+`{radius_mi}`, `{radius_km}`, `{now}`, `{now_iso}`, `{since}` and `{since_iso}`.
+
+**Simulator** — a drifting storm cell. Use it to prove the whole chain works,
+including Slack delivery, before real weather arrives. The settings screen
+warns while it is selected; never leave it on in production.
+
+> Lightning detection networks are an aid, not a guarantee. Keep your venue's
+> severe weather policy as the authority and treat this as one input to it.
+
+---
+
+## Connecting Slack
+
+Settings → **Slack**. Bot token is the better option: one token can post to any
+channel the bot has been invited to, and Slack returns a precise reason when
+something is wrong.
+
+1. Go to <https://api.slack.com/apps> → **Create New App** → **From scratch**.
+   Name it (e.g. "Storm Watch") and pick your workspace.
+2. **OAuth & Permissions** → **Scopes** → **Bot Token Scopes** → add
+   `chat:write`.
+3. **Install to Workspace**, then copy the **Bot User OAuth Token** — it starts
+   with `xoxb-`.
+4. In Slack, open the channel you want alerts in and run
+   `/invite @Storm Watch`. **A bot cannot post to a channel it is not in** —
+   this is the single most common reason alerts do not arrive.
+5. Paste the token into Storm Watch, set the channel, **Save**, then
+   **Send a test message**.
+
+For the channel, a channel ID is the most reliable: in Slack, open the channel,
+click its name, and use **Copy channel ID** at the bottom. `#channel-name` also
+works.
+
+The token is encrypted before it is stored, is never sent back to the browser,
+and is never written to the activity log.
+
+**Incoming webhook** is offered as an alternative when creating an app is not
+practical. The channel is then fixed by the webhook itself.
+
+### What gets posted
+
+- **Lightning warning** when a strike lands inside the alert radius, with the
+  distance, direction, time, and how many strikes are in the window.
+- **Updates** while a warning is running — on a timer, and when the storm
+  closes in by more than the configured margin.
+- **All clear** once the alert radius has been quiet for the all-clear period.
+- **Watch** notices as a storm enters the wider watch radius (off by default).
+- **Feed failures**, at most once an hour, when lightning data stops arriving.
+
+`@here` and `@channel` mentions apply only to lightning warnings — never to
+all-clear or test messages, so the room is not pinged to be told everything is
+fine.
+
+---
+
+## Alert rules
+
+Settings → **Alert rules**.
+
+| Setting | Default | What it does |
+|---|---|---|
+| Alert radius | 10 mi | A strike inside this raises a warning and notifies |
+| Watch radius | 20 mi | Early heads-up as a storm approaches |
+| Display radius | 30 mi | What gets stored and drawn on the map |
+| All clear after | 30 min | Quiet time inside the alert radius before standing down |
+| Repeat while active | 15 min | Reminder cadence during a warning; 0 for one alert only |
+| Re-alert if closer by | 3 mi | Sends an update when the storm closes in this much |
+
+Ten miles and thirty minutes are the common choices for outdoor venues:
+lightning routinely strikes that far from its parent storm, and the thirty
+minute hold is the widely used all-clear guidance. Set them to whatever your
+own safety policy requires.
+
+The **Mute 30m** button on the dashboard suppresses Slack and email while
+leaving the map and state live — for when you are already standing in the rain
+watching it and do not need to be told again.
+
+---
+
+## Email alerts
+
+Settings → **Email**. Two transports:
+
+- **Server mail** — PHP's `mail()`. Zero configuration, but shared hosts are
+  frequently treated as spam sources.
+- **SMTP** — host, port, encryption, username and password. Worth the extra
+  fields. Use the mailbox credentials from cPanel → **Email Accounts**.
+
+Set the "from" address to a real mailbox on the same domain, or the host will
+reject the message. Carrier SMS gateway addresses work as recipients if you
+want texts.
+
+---
+
+## Wall displays and kiosks
+
+Settings → **System** has a **Kiosk link** containing a token. Opening that URL
+shows the dashboard without signing in — useful for a screen in an office or
+guest services. Regenerate the token to revoke every kiosk link at once.
+
+If you would rather the dashboard were simply public, turn on **Public
+dashboard** on the same tab. Settings always require signing in.
+
+## No cron jobs? Web cron instead
+
+Some hosting plans do not offer cron. Settings → **System** shows a **Web cron
+URL** with its own token. Point any external scheduler at it once a minute —
+cron-job.org, UptimeRobot, or a machine you control:
+
+```
+https://your-site/api/cron.php?token=YOUR_TOKEN&job=tick
+```
+
+Add a second schedule with `&job=worker` if you are using the Blitzortung feed.
+
+---
+
+## Security
+
+- Passwords are hashed with `password_hash`; sign-in attempts are throttled per
+  IP.
+- All state-changing requests require a CSRF token.
+- The Slack token and SMTP password are encrypted at rest with the
+  installation's app key, and the API never returns them.
+- `config/`, `data/`, `src/` and `bin/` are blocked by `.htaccess`, and in the
+  recommended layout they are outside the web root entirely.
+- Every page sends `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy` and `noindex`.
+
+Serve the site over HTTPS. cPanel provisions free certificates through
+**SSL/TLS Status**; there is no reason not to.
+
+If `config/config.php` is ever exposed or the app key changes, re-enter the
+Slack token and SMTP password — those are the only values that become
+unreadable.
+
+---
+
+## Command line
+
+```bash
+php bin/stormwatch.php status        # health summary; exits non-zero if unhealthy
+php bin/stormwatch.php test-slack    # post a test message
+php bin/stormwatch.php test-source   # check the configured feed
+php bin/stormwatch.php simulate 4    # store a strike 4 miles out
+php bin/stormwatch.php get           # print every setting
+php bin/stormwatch.php set alert_radius_mi 8
+php bin/stormwatch.php passwd admin 'a-new-passphrase'
+php bin/stormwatch.php prune         # drop expired strikes and log entries
+```
+
+`status` exits non-zero when the feed or cron is unhealthy, so it can be wired
+into external monitoring.
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| "Scheduled task not running" on the dashboard | The cron jobs are missing or the PHP path is wrong. Run `php bin/tick.php -v` by hand to see the real error. |
+| Slack test says `not_in_channel` | Invite the bot: `/invite @YourBot` in that channel. |
+| Slack test says `channel_not_found` | Use the channel ID rather than the name. |
+| Slack test says `missing_scope` | Add `chat:write` under OAuth & Permissions, then reinstall the app. |
+| Blitzortung test cannot connect | The host blocks outbound port 3000. Switch to the browser relay or a REST feed. |
+| No strikes appear at all | Often there is simply no lightning within 30 miles. Press **Simulate strike** to confirm the pipeline works. |
+| Email never arrives | Switch to SMTP and use a real mailbox on the domain as the "from" address. |
+| The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |
+| Setup wizard says a folder is not writable | Set `config/` and `data/` to `0755` in File Manager. |
+
+**Vendoring Leaflet.** If your network blocks CDNs, download Leaflet 1.9.4 and
+drop `leaflet.js`, `leaflet.css` and its `images/` folder into
+`public/assets/vendor/leaflet/`. The app uses the local copy automatically when
+it is present. The dashboard keeps working without a map either way — alerts,
+statistics and the strike log are unaffected.
+
+---
+
+## Development
+
+```bash
+php tests/run.php     # unit tests: geo, LZW, alert state machine, Slack payloads, crypto
+./tests/smoke.sh      # end-to-end: installs into a scratch dir and drives real HTTP
+php -S localhost:8000 -t public
+```
+
+`smoke.sh` stashes and restores any existing local installation, so it is safe
+to run against a working checkout.
+
+### Layout
+
+```
+bin/         cron entry points and the CLI
+config/      config.php (generated) — database credentials and the app key
+data/        SQLite database, locks, provider state; nothing web-servable
+public/      the web root: pages, JSON API, assets
+src/         application code, PSR-4 under the StormWatch namespace
+tests/       unit tests and the end-to-end smoke test
+```
+
+The `src/` classes worth knowing: `AlertEngine` holds the state machine,
+`Strikes` is the store and its de-duplication, `Runner` orchestrates the cron
+jobs, `Settings` is the schema-driven configuration, and `Providers/` plus
+`WebSocket/` contain the feed clients.
+
+---
+
+## Credits
+
+Strike data from the [Blitzortung.org](https://www.blitzortung.org/) volunteer
+network — if you rely on it, consider hosting a receiver. Map tiles ©
+OpenStreetMap contributors and CARTO. Radar from
+[RainViewer](https://www.rainviewer.com/) or the Iowa Environmental Mesonet.
+Maps rendered with [Leaflet](https://leafletjs.com/).
