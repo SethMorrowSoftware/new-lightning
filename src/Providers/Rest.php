@@ -148,7 +148,7 @@ final class Rest
             return self::failure('The request failed: ' . $error, $status);
         }
         if ($status < 200 || $status >= 300) {
-            return self::failure(self::explainStatus($status, $body), $status);
+            return self::failure(self::explainStatus($status, $body, $url), $status);
         }
 
         $decoded = json_decode($body, true);
@@ -316,12 +316,36 @@ final class Rest
     }
 
     /**
+     * Strip credentials out of a URL so it can be shown on screen or written to
+     * a log. The endpoint template carries the client ID and secret as query
+     * parameters, so this has to happen before the URL is quoted anywhere.
+     */
+    public static function redactUrl(string $url): string
+    {
+        $sensitive = ['client_secret', 'client_id', 'secret', 'apikey', 'api_key', 'key',
+                      'token', 'access_token', 'password', 'pass', 'auth'];
+        return (string) preg_replace_callback(
+            '/([?&])([^=&]+)=([^&]*)/',
+            static function (array $m) use ($sensitive): string {
+                return in_array(strtolower(rawurldecode($m[2])), $sensitive, true)
+                    ? $m[1] . $m[2] . '=***'
+                    : $m[1] . $m[2] . '=' . $m[3];
+            },
+            $url
+        );
+    }
+
+    /**
      * Turn a failed HTTP status into something a person can act on. The raw
      * body is kept on the end, but the leading sentence should already say what
      * went wrong — an operator reading this is usually not the person who set
      * the credentials up.
+     *
+     * The URL is quoted back because "your plan does not cover this endpoint"
+     * is useless without knowing which endpoint was asked for. Credentials are
+     * stripped out of it first.
      */
-    public static function explainStatus(int $status, string $body): string
+    public static function explainStatus(int $status, string $body, string $url = ''): string
     {
         $snippet = trim(mb_substr(strip_tags($body), 0, 200));
         $decoded = json_decode($body, true);
@@ -331,29 +355,45 @@ final class Rest
             $code = is_string($decoded['error']['code'] ?? null) ? $decoded['error']['code'] : '';
             $description = is_string($decoded['error']['description'] ?? null) ? $decoded['error']['description'] : '';
         }
+        $where = $url === '' ? '' : ' Requested: ' . self::redactUrl($url);
 
         // Xweather answers 401 for both "who are you" and "not on your plan",
         // which is why these have to be told apart by the error code.
         if ($code === 'insufficient_scope' || stripos($description, 'subscription level') !== false) {
+            // Whether this is fixable by changing the endpoint depends entirely
+            // on which one was asked for, so say which case this is rather than
+            // offering advice that may already have been followed.
+            $isFlash = stripos($url, '/lightning/flash') !== false;
+            $advice = $isFlash
+                ? 'That is lightning/flash, the endpoint with the widest availability — so lightning data is not '
+                    . 'included on this account at all, and no change of endpoint will fix it. Either add the '
+                    . 'Lightning add-on to the Xweather account, or switch to a free source: Blitzortung, or the '
+                    . 'browser relay if this host blocks outbound connections.'
+                : 'That is the plain lightning endpoint. Try the "lightning flash" option from Quick setup on the '
+                    . 'Data source tab, which is available on more plans. If flash fails the same way, lightning '
+                    . 'data is not included on this account and needs the paid Lightning add-on.';
             return 'The credentials were accepted, but this account\'s plan does not cover this endpoint '
-                . '(HTTP ' . $status . ' insufficient_scope). On Xweather, the free and standard plans include '
-                . 'lightning/flash but not the plain lightning endpoint, which needs the Lightning Enterprise '
-                . 'add-on. Pick the "lightning flash" option from Quick setup on the Data source tab, or add the '
-                . 'add-on to the account. Response: ' . $snippet;
+                . '(HTTP ' . $status . ' insufficient_scope).' . $where . ' ' . $advice . ' Response: ' . $snippet;
         }
         if ($code === 'invalid_client' || $code === 'unauthorized' || $status === 401 || $status === 403) {
             return 'The endpoint rejected the credentials (HTTP ' . $status . ($code !== '' ? ' ' . $code : '') . '). '
-                . 'Check the ID and secret on the Data source tab, and that the account is active. Response: ' . $snippet;
+                . 'Check the ID and secret on the Data source tab, and that the account is active.' . $where
+                . ' Response: ' . $snippet;
         }
         if ($status === 429) {
             return 'The endpoint is rate limiting these requests (HTTP 429). Slow the poll intervals down on the '
-                . 'Data source tab. Response: ' . $snippet;
+                . 'Data source tab.' . $where . ' Response: ' . $snippet;
         }
         if ($status >= 500) {
             return 'The provider had a server error (HTTP ' . $status . '). This is their end, not the '
-                . 'configuration; polling will retry. Response: ' . $snippet;
+                . 'configuration; polling will retry.' . $where . ' Response: ' . $snippet;
         }
-        return sprintf('The endpoint returned HTTP %d.%s', $status, $snippet !== '' ? ' Response: ' . $snippet : '');
+        return sprintf(
+            'The endpoint returned HTTP %d.%s%s',
+            $status,
+            $where,
+            $snippet !== '' ? ' Response: ' . $snippet : ''
+        );
     }
 
     /** @return array<int,string> */
