@@ -114,6 +114,27 @@ contains "${WORK}/dash.html" "Live map" "the map panel is present"
 contains "${WORK}/dash.html" "leaflet" "Leaflet is loaded"
 contains "${WORK}/dash.html" "sw-boot" "the boot data block is present"
 contains "${WORK}/dash.html" 'class="alert-banner unknown"' "the banner starts neutral, not on a green all-clear"
+
+# These two are static checks on the dashboard script, because the PHP suite
+# cannot execute it. A thrown exception during map setup used to kill the whole
+# script before it ever polled — the map looked perfect and nothing else on the
+# page ever updated — so the safety net around it is worth pinning down.
+contains "${ROOT}/public/assets/js/dashboard.js" "catch (mapError)" \
+  "a failure while drawing the map cannot stop the dashboard polling"
+if grep -q 'circle(.*)\.getBounds()' "${ROOT}/public/assets/js/dashboard.js"; then
+  red "the map is fitted without projecting a detached circle through the map"
+else
+  green "the map is fitted without projecting a detached circle through the map"
+fi
+
+DASHV=$(grep -o 'js/dashboard\.js?v=[^"]*' "${WORK}/dash.html" | head -1 | sed 's/.*v=//')
+check "dashboard.js is versioned by the file itself, not a fixed number (v=${DASHV})" \
+  "$([ -n "$DASHV" ] && [ "$DASHV" != "1.0.0" ] && echo 0 || echo 1)"
+touch "${ROOT}/public/assets/js/dashboard.js"
+curl -s -o "${WORK}/dash2.html" -c "$JAR" -b "$JAR" "${BASE}/index.php"
+DASHV2=$(grep -o 'js/dashboard\.js?v=[^"]*' "${WORK}/dash2.html" | head -1 | sed 's/.*v=//')
+check "changing an asset changes its URL, so browsers refetch it" \
+  "$([ -n "$DASHV2" ] && [ "$DASHV" != "$DASHV2" ] && echo 0 || echo 1)"
 contains "${WORK}/dash.html" "Strike log" "the strike log panel is present"
 contains "${WORK}/dash.html" "Data source" "the data source panel is present"
 

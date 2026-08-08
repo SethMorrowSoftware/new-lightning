@@ -22,7 +22,7 @@ final class View
         $venue = Config::isInstalled() ? Settings::getString('venue_name') : 'Storm Watch';
         $bodyClass = $options['bodyClass'] ?? '';
         $useLeaflet = !empty($options['leaflet']);
-        $asset = static fn(string $path): string => Http::url('assets/' . $path) . '?v=' . SW_VERSION;
+        $asset = static fn(string $path): string => self::assetUrl($path);
 
         echo '<!DOCTYPE html>' . "\n";
         echo '<html lang="en">' . "\n<head>\n";
@@ -52,6 +52,25 @@ final class View
     }
 
     /**
+     * A cache-busting URL for one of our own assets.
+     *
+     * This used to be "?v=" . SW_VERSION, which is a version number nobody
+     * remembers to raise: it stayed at 1.0.0 while the scripts underneath it
+     * changed repeatedly, so every browser that had ever loaded the page kept
+     * running whichever copy it cached first. An upgrade would land on the
+     * server and change nothing that anyone could see.
+     *
+     * The modification time cannot be forgotten — deploying a file is what
+     * changes it — so the URL moves exactly when the file does.
+     */
+    public static function assetUrl(string $path): string
+    {
+        $file = __DIR__ . '/../public/assets/' . $path;
+        $stamp = is_file($file) ? (string) filemtime($file) : SW_VERSION;
+        return Http::url('assets/' . $path) . '?v=' . rawurlencode($stamp);
+    }
+
+    /**
      * Prefer a locally vendored Leaflet when one has been dropped into
      * public/assets/vendor/leaflet/, so a site behind a restrictive network —
      * or a CDN having a bad day — still gets a map. Falls back to the CDN.
@@ -60,7 +79,7 @@ final class View
     {
         $file = $kind === 'css' ? 'leaflet.css' : 'leaflet.js';
         if (is_file(__DIR__ . '/../public/assets/vendor/leaflet/' . $file)) {
-            return Http::url('assets/vendor/leaflet/' . $file) . '?v=' . SW_VERSION;
+            return self::assetUrl('vendor/leaflet/' . $file);
         }
         return $kind === 'css' ? self::LEAFLET_CSS : self::LEAFLET_JS;
     }
@@ -129,7 +148,7 @@ final class View
         }
         echo "</div>\n"; // .wrap
         foreach ($scripts as $script) {
-            echo '<script src="' . Http::e(Http::url('assets/' . $script)) . '?v=' . SW_VERSION . '"></script>' . "\n";
+            echo '<script src="' . Http::e(self::assetUrl($script)) . '"></script>' . "\n";
         }
         echo "</body>\n</html>\n";
     }

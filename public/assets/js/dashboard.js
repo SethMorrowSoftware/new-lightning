@@ -107,15 +107,17 @@
   var hasLeaflet = typeof L !== 'undefined' && L && typeof L.map === 'function';
   var map = null;
 
-  if (!hasLeaflet) {
+  function showMapUnavailable(reason) {
     var container = el('map');
-    if (container) {
-      container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;'
-        + 'height:100%;padding:24px;text-align:center;color:var(--text-lo);font-size:13px;line-height:1.6;">'
-        + 'The map library could not be loaded, so the map is unavailable.<br>'
-        + 'Alerts, statistics and the strike log below are unaffected.</div>';
-    }
-  } else {
+    if (!container) return;
+    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;'
+      + 'height:100%;padding:24px;text-align:center;color:var(--text-lo);font-size:13px;line-height:1.6;">'
+      + reason + '<br>Alerts, statistics and the strike log below are unaffected.</div>';
+  }
+
+  if (!hasLeaflet) {
+    showMapUnavailable('The map library could not be loaded, so the map is unavailable.');
+  } else try {
     map = L.map('map', { zoomControl: true, attributionControl: true })
       .setView([boot.venue.lat, boot.venue.lon], boot.mapZoom);
 
@@ -154,11 +156,26 @@
       .bindPopup('<b>' + escapeHtml(boot.venue.name) + '</b>'
         + (boot.venue.address ? '<br>' + escapeHtml(boot.venue.address) : ''));
 
-    // Keep the configured rings in view on first paint.
+    /* Keep the configured rings in view on first paint.
+
+       This must not go through a circle's getBounds(): Leaflet computes those
+       bounds by projecting through the map the layer belongs to, so asking a
+       circle that was never added to one throws, and the throw lands here —
+       after the tiles, rings and venue marker have been drawn, but before the
+       first poll. The map looked fine and nothing else on the page ever
+       updated. toBounds() is plain geometry on the coordinate and needs no
+       map at all. */
     map.fitBounds(
-      L.circle([boot.venue.lat, boot.venue.lon], { radius: boot.radii.display * MI_TO_M }).getBounds(),
+      L.latLng(boot.venue.lat, boot.venue.lon).toBounds(boot.radii.display * MI_TO_M * 2),
       { padding: [12, 12] }
     );
+  } catch (mapError) {
+    /* The map is the one part of this page that is allowed to fail; the alert
+       state is not. Losing the map must never stop the polling that tells an
+       operator whether it is safe to be outside. */
+    hasLeaflet = false;
+    map = null;
+    showMapUnavailable('The map could not be drawn, so it is unavailable.');
   }
 
   // ---------- radar overlay ----------
@@ -208,7 +225,8 @@
     setInterval(apply, 5 * 60 * 1000);
   }
 
-  initRadar();
+  // Radar is decoration over the top of the map; it gets the same treatment.
+  try { initRadar(); } catch (radarError) { radarLayer = null; }
 
   var opacitySlider = el('radarOpacity');
   if (opacitySlider) {
@@ -270,6 +288,7 @@
 
   function renderLog() {
     var list = el('logList');
+    if (!list) return;
     if (!state.strikes.length) {
       list.innerHTML = '<div class="log-empty">No strikes recorded in the last '
         + boot.markerTtlMinutes + ' minutes.</div>';
@@ -287,7 +306,8 @@
     list.innerHTML = html;
   }
 
-  el('logList').addEventListener('click', function (event) {
+  var logList = el('logList');
+  if (logList) logList.addEventListener('click', function (event) {
     var row = event.target.closest('.log-row');
     if (!row || !map) return;
     var marker = state.markers[row.getAttribute('data-id')];
