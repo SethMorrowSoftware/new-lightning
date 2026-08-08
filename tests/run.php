@@ -823,6 +823,19 @@ T::group('Provider limits: radius cap and data window');
     }
 }
 
+T::group('Mapping verification');
+{
+    // Pointing the endpoint somewhere else is the whole mechanism, so an
+    // endpoint with nowhere to substitute has to say so rather than silently
+    // querying the venue five times and reporting a clean pass.
+    Settings::putRaw('rest_endpoint', 'https://data.api.xweather.com/lightning/flash/closest?p=44.9,-93.2');
+    $probe = Rest::probeMapping();
+    T::ok(!$probe['ok'], 'an endpoint with no {lat}/{lon} cannot be probed');
+    T::ok(stripos($probe['message'], 'placeholder') !== false, 'and the reason given is the missing placeholders');
+
+    Settings::putRaw('rest_endpoint', 'https://data.api.xweather.com/lightning/flash/closest?p={lat},{lon}');
+}
+
 T::group('Provider error messages');
 {
     // The message an operator reads at 9pm has to name the cause. This is the
