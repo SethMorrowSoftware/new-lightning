@@ -1,0 +1,13 @@
+# Application code, never web content. The root .htaccess also blocks this
+# folder, but only when mod_rewrite is available — this file does not depend
+# on it. Storm Watch recreates this if it goes missing.
+
+<IfModule mod_authz_core.c>
+  Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+  Order allow,deny
+  Deny from all
+</IfModule>
+
+Options -Indexes -ExecCGI

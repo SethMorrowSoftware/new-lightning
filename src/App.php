@@ -74,14 +74,7 @@ final class App
      */
     public static function protectDataDirectory(): void
     {
-        $guard = SW_DATA . '/.htaccess';
-        if (is_file($guard)) {
-            return;
-        }
-        if (!is_dir(SW_DATA) && !@mkdir(SW_DATA, 0755, true) && !is_dir(SW_DATA)) {
-            return;
-        }
-        @file_put_contents($guard, implode("\n", [
+        $deny = implode("\n", [
             '<IfModule mod_authz_core.c>',
             '  Require all denied',
             '</IfModule>',
@@ -93,7 +86,24 @@ final class App
             'Options -Indexes -ExecCGI',
             'RemoveHandler .php .phtml .php3 .php4 .php5 .php7 .php8',
             '',
-        ]), LOCK_EX);
+        ]);
+
+        if (!is_dir(SW_DATA) && !@mkdir(SW_DATA, 0755, true) && !is_dir(SW_DATA)) {
+            return;
+        }
+
+        // In the subfolder deployment these files sit under the web root, so
+        // they are what stands between the internet and the database, the
+        // config and the source. Put any of them back if it goes missing.
+        foreach ([SW_DATA, SW_ROOT . '/config', SW_ROOT . '/src', SW_ROOT . '/bin', SW_ROOT . '/tests'] as $dir) {
+            if (!is_dir($dir)) {
+                continue;
+            }
+            $guard = $dir . '/.htaccess';
+            if (!is_file($guard)) {
+                @file_put_contents($guard, $deny, LOCK_EX);
+            }
+        }
     }
 
     /** Run pending migrations. Cheap: one query when there is nothing to do. */

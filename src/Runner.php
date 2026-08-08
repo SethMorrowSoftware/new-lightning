@@ -246,7 +246,14 @@ final class Runner
             return;
         }
 
+        // Always record it — this is the evidence when someone asks why no
+        // alerts arrived — but honour a mute for the outbound copy, so one
+        // setting governs everything that would otherwise reach Slack.
         Events::log('system.source_error', Events::SEVERITY_ERROR, $label . ': ' . $message, []);
+
+        if (AlertEngine::publicState()['muted_until'] !== null) {
+            return;
+        }
 
         $alert = new Alert(
             Alert::KIND_ERROR,

@@ -325,9 +325,17 @@ T::group('Alert state machine');
     T::same(2, count(Events::recent(50, 'alert.warning')), 'a new storm alerts again');
 
     // Re-alert once the storm has closed in by more than closer_delta_mi.
+    // Updates have a floor between them, so backdate the last one past it.
+    Database::instance()->run('UPDATE alert_state SET notified_at = ? WHERE id = 1', [time() - 600]);
     placeStrike(0.5, 300.0);
     AlertEngine::evaluate();
     T::ok(count(Events::recent(50, 'alert.update')) >= 1, 'a closer strike sends an update');
+
+    // ...but a second one moments later is held back by that floor.
+    $updatesBefore = count(Events::recent(50, 'alert.update'));
+    placeStrike(0.4, 301.0);
+    AlertEngine::evaluate();
+    T::same($updatesBefore, count(Events::recent(50, 'alert.update')), 'a second update is held back by the floor');
 
     // Muting suppresses delivery but still resolves the state.
     resetData();
@@ -378,6 +386,14 @@ T::group('Mount point detection');
     $mount = static function (string $script, string $uri): string {
         $_SERVER['SCRIPT_NAME'] = $script;
         $_SERVER['REQUEST_URI'] = $uri;
+        // A web server also sets SCRIPT_FILENAME to the file it is executing,
+        // and the mount detection uses it to tell a real public/api/ request
+        // from an app that merely lives in a folder called "api".
+        $segments = explode('/', trim($script, '/'));
+        $tail = count($segments) >= 2 && $segments[count($segments) - 2] === 'api'
+            ? 'api/' . end($segments)
+            : end($segments);
+        $_SERVER['SCRIPT_FILENAME'] = SW_ROOT . '/public/' . $tail;
         \StormWatch\Http::resetBasePath();
         return \StormWatch\Http::basePath();
     };
@@ -421,6 +437,98 @@ T::group('Mount point detection');
 
     unset($_SERVER['SCRIPT_NAME'], $_SERVER['REQUEST_URI']);
     \StormWatch\Http::resetBasePath();
+}
+
+T::group('Sign-in redirect target');
+{
+    // Auth::requireLogin() stores where the visitor was heading, and
+    // Http::redirect() puts the mount back on. If the stored value already
+    // carried the mount, the two would compound into /stormwatch/stormwatch/…
+    $relative = static function (string $script, string $uri): string {
+        $_SERVER['SCRIPT_NAME'] = $script;
+        $_SERVER['REQUEST_URI'] = $uri;
+        $_SERVER['SCRIPT_FILENAME'] = SW_ROOT . '/public/index.php';
+        \StormWatch\Http::resetBasePath();
+        return \StormWatch\Http::relativeUri();
+    };
+
+    T::same('/settings.php', $relative('/stormwatch/public/settings.php', '/stormwatch/settings.php'), 'the mount is stripped from the stored path');
+    T::same('/settings.php?tab=slack', $relative('/stormwatch/public/settings.php', '/stormwatch/settings.php?tab=slack'), 'the query string survives');
+    T::same('/', $relative('/stormwatch/public/index.php', '/stormwatch/'), 'the mount root becomes /');
+    T::same('/settings.php', $relative('/settings.php', '/settings.php'), 'a root install is unchanged');
+
+    // The round trip is what actually matters.
+    $_SERVER['SCRIPT_NAME'] = '/stormwatch/public/login.php';
+    $_SERVER['REQUEST_URI'] = '/stormwatch/settings.php';
+    $_SERVER['SCRIPT_FILENAME'] = SW_ROOT . '/public/login.php';
+    \StormWatch\Http::resetBasePath();
+    T::same(
+        '/stormwatch/settings.php',
+        \StormWatch\Http::url(\StormWatch\Http::relativeUri()),
+        'storing then rebuilding the target gives the original URL back'
+    );
+
+    unset($_SERVER['SCRIPT_NAME'], $_SERVER['REQUEST_URI'], $_SERVER['SCRIPT_FILENAME']);
+    \StormWatch\Http::resetBasePath();
+}
+
+T::group('Alerting when locking is impossible');
+{
+    // A host where data/locks cannot be created must still send alerts —
+    // silently never alerting is the worst possible failure for this app.
+    // Occupying the path with a file makes both mkdir and fopen fail.
+    $lockDir = SW_DATA . '/locks';
+    $restore = null;
+    if (is_dir($lockDir)) {
+        $restore = $lockDir . '-testbak';
+        @rename($lockDir, $restore);
+    }
+    @file_put_contents($lockDir, 'not a directory');
+
+    resetData();
+    placeStrike(4.0, 33.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(50, 'alert.warning')), 'an alert is still sent with no lock available');
+    T::ok(count(Events::recent(50, 'system.lock_unavailable')) >= 1, 'and the missing lock is reported');
+
+    @unlink($lockDir);
+    if ($restore !== null) {
+        @rename($restore, $lockDir);
+    }
+}
+
+T::group('Mute holds alerts rather than dropping them');
+{
+    resetData();
+    Settings::put(['all_clear_minutes' => 30, 'cooldown_scope' => 'alert', 'realert_minutes' => 0, 'closer_delta_mi' => 0.0]);
+
+    AlertEngine::mute(30);
+    placeStrike(4.0, 55.0);
+    AlertEngine::evaluate();
+    T::same(0, count(Events::recent(50, 'alert.warning')), 'nothing is announced while muted');
+    T::same('warning', AlertEngine::publicState()['level'], 'the level still tracks the storm');
+
+    // Several cron ticks pass; the log must not fill with suppression notices.
+    AlertEngine::evaluate();
+    AlertEngine::evaluate();
+    T::ok(count(Events::recent(50, 'alert.suppressed')) <= 1, 'the mute is logged once, not once per tick');
+
+    // The storm is still going when the mute expires: staff must be told.
+    AlertEngine::unmute();
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(50, 'alert.warning')), 'the held alert is delivered once the mute expires');
+}
+
+T::group('Read-only evaluation');
+{
+    resetData();
+    placeStrike(4.0, 66.0);
+    AlertEngine::evaluate(false);
+    T::same('warning', AlertEngine::publicState()['level'], 'a read-only evaluation still resolves the level');
+    T::same(0, count(Events::recent(50, 'alert.warning')), 'and announces nothing');
+
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(50, 'alert.warning')), 'the alert is not consumed by the read-only pass');
 }
 
 T::group('Alert cooldown');

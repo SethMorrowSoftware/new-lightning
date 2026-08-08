@@ -60,7 +60,10 @@ final class Auth
     {
         $user = self::user();
         if ($user === null) {
-            $target = (string) ($_SERVER['REQUEST_URI'] ?? '');
+            // Store the path relative to the mount point. Http::redirect()
+            // adds the mount back on, and a full path here would end up with
+            // it twice — "/stormwatch/stormwatch/settings.php".
+            $target = Http::relativeUri();
             Http::redirect('login.php' . ($target !== '' ? '?next=' . rawurlencode($target) : ''));
         }
         return $user;

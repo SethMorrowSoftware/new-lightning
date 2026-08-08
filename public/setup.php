@@ -81,6 +81,27 @@ function requirementChecks(): array
         'critical' => false,
         'detail' => 'Only needed for the direct Blitzortung feed. Without it, use the REST or browser-relay source.',
     ];
+
+    // Only meaningful for the subfolder deployment, where the root .htaccess
+    // does the work. Apache will not always tell us, so an unknown answer is
+    // reported as such rather than as a failure.
+    $rewrite = null;
+    if (function_exists('apache_get_modules')) {
+        $rewrite = in_array('mod_rewrite', apache_get_modules(), true);
+    } elseif (getenv('HTTP_MOD_REWRITE') !== false) {
+        $rewrite = true;
+    }
+    $checks[] = [
+        'label' => 'mod_rewrite',
+        'ok' => $rewrite !== false,
+        'critical' => false,
+        'detail' => $rewrite === null
+            ? 'Could not be detected on this server. It is only needed when Storm Watch is installed in a subfolder — if the dashboard loads, it is working.'
+            : ($rewrite
+                ? 'Available, so a subfolder install will work.'
+                : 'Not available. Point a document root at the public/ folder instead of installing into a subfolder.'),
+    ];
+
     return $checks;
 }
 

@@ -21,6 +21,9 @@ use StormWatch\Notifiers\SlackNotifier;
 
 final class AlertEngine
 {
+    /** Floor between distance-triggered updates when no repeat interval is set. */
+    private const MIN_UPDATE_SECONDS = 300;
+
     public const LEVEL_CLEAR = 'clear';
     public const LEVEL_WATCH = 'watch';
     public const LEVEL_WARNING = 'warning';
@@ -36,17 +39,26 @@ final class AlertEngine
         // tick.php and worker.php hold separate locks and can overlap. Without
         // a lock here they could both see "not yet announced" and each send the
         // same alert. Losing the race means another process is already on it.
-        $lock = $notify ? self::acquireLock(3.0) : null;
-        if ($notify && $lock === null) {
-            // Someone else is mid-decision and has been for a while; their run
-            // covers this moment, so report the state rather than duplicate it.
-            return self::publicState();
+        $lock = null;
+        if ($notify) {
+            $lock = self::acquireLock(3.0);
+            if ($lock === false) {
+                // Another process holds the lock and has for a while; its run
+                // covers this moment, so report state rather than duplicate.
+                return self::publicState();
+            }
+            // $lock === null means locking is impossible here (no writable
+            // data/locks). Carry on unlocked: a small risk of a duplicate
+            // alert is vastly better than silently never alerting at all.
+            if ($lock === null) {
+                self::warnAboutMissingLock();
+            }
         }
 
         try {
             $outcome = self::decide($notify);
         } finally {
-            if ($lock !== null) {
+            if (is_resource($lock)) {
                 flock($lock, LOCK_UN);
                 fclose($lock);
             }
@@ -56,20 +68,17 @@ final class AlertEngine
         // and the decision is already durable — no other process will send
         // this alert — so there is nothing to gain by holding it.
         if ($outcome['alert'] !== null) {
-            if ($outcome['muted']) {
-                Events::log(
-                    'alert.suppressed',
-                    Events::SEVERITY_WARNING,
-                    sprintf(
-                        'Alerts are muted until %s UTC — "%s" was not sent.',
-                        gmdate('H:i', $outcome['muted_until']),
-                        $outcome['alert']->title
-                    ),
-                    ['kind' => $outcome['alert']->kind]
-                );
-            } else {
-                self::dispatch($outcome['alert']);
-            }
+            self::dispatch($outcome['alert']);
+        } elseif (!empty($outcome['log_suppression'])) {
+            Events::log(
+                'alert.suppressed',
+                Events::SEVERITY_WARNING,
+                sprintf(
+                    'Alerts are muted until %s UTC. The alert is being held, not dropped — it will be sent when the mute expires.',
+                    gmdate('H:i', $outcome['muted_until'])
+                ),
+                []
+            );
         }
 
         return $outcome['state'];
@@ -79,7 +88,12 @@ final class AlertEngine
      * Take the alert lock, waiting briefly for it. The critical section is a
      * handful of queries, so a short wait beats returning a stale answer.
      *
-     * @return resource|null
+     * Three outcomes, and the difference matters:
+     *   resource — the lock is held
+     *   false    — someone else holds it; skip this run
+     *   null     — locking is not possible here; proceed without it
+     *
+     * @return resource|false|null
      */
     private static function acquireLock(float $waitSeconds = 0.0)
     {
@@ -89,7 +103,6 @@ final class AlertEngine
         }
         $handle = @fopen($dir . '/alerts.lock', 'c');
         if ($handle === false) {
-            // No writable lock file: carry on rather than stop alerting.
             return null;
         }
         $deadline = microtime(true) + max(0.0, $waitSeconds);
@@ -101,7 +114,29 @@ final class AlertEngine
         } while (microtime(true) < $deadline);
 
         fclose($handle);
-        return null;
+        return false;
+    }
+
+    /** Say so once an hour, rather than failing quietly or filling the log. */
+    private static function warnAboutMissingLock(): void
+    {
+        try {
+            $last = Database::instance()->first(
+                "SELECT created_at FROM events WHERE type = 'system.lock_unavailable' ORDER BY id DESC LIMIT 1"
+            );
+            if ($last !== null && (time() - (int) $last['created_at']) < 3600) {
+                return;
+            }
+            Events::log(
+                'system.lock_unavailable',
+                Events::SEVERITY_WARNING,
+                'Could not create a lock file in data/locks, so overlapping runs are not being coordinated. '
+                . 'Alerts are still being sent. Make the data directory writable to remove the small risk of a duplicate alert.',
+                []
+            );
+        } catch (\Throwable $e) {
+            // Never let the warning path interfere with alerting.
+        }
     }
 
     /**
@@ -165,6 +200,10 @@ final class AlertEngine
         }
 
         $alert = null;
+        // Set when the decision resolves an announcement even if nothing is
+        // sent — an all clear that is switched off still has to reset the
+        // state, or the next storm would never alert.
+        $resolvesTo = null;
 
         if ($level === self::LEVEL_WARNING && $notifiedLevel !== self::LEVEL_WARNING) {
             $alert = self::buildWarning($lastInAlert, $nearest, $alertRadius, $window);
@@ -175,11 +214,7 @@ final class AlertEngine
             $alert = Settings::getBool('notify_all_clear')
                 ? self::buildAllClear($window, $level, $nearest)
                 : null;
-            $changes['notified_level'] = self::LEVEL_CLEAR;
-            $changes['notified_nearest_mi'] = null;
-            if ($alert === null) {
-                $changes['notified_at'] = $now;
-            }
+            $resolvesTo = self::LEVEL_CLEAR;
         } elseif ($level === self::LEVEL_WATCH
             && $notifiedLevel === self::LEVEL_CLEAR
             && Settings::getBool('notify_watch')) {
@@ -187,31 +222,42 @@ final class AlertEngine
         } elseif ($level === self::LEVEL_CLEAR && $notifiedLevel !== self::LEVEL_CLEAR) {
             // A watch that was announced has now faded out entirely.
             $alert = Settings::getBool('notify_all_clear')
-                ? self::buildAllClear($window, $level, $nearest)
+                ? self::buildAllClear($window, $level, $nearest, false)
                 : null;
-            $changes['notified_level'] = self::LEVEL_CLEAR;
-            $changes['notified_nearest_mi'] = null;
-            if ($alert === null) {
-                $changes['notified_at'] = $now;
-            }
+            $resolvesTo = self::LEVEL_CLEAR;
         } elseif ($level === self::LEVEL_WARNING && $notifiedLevel === self::LEVEL_WARNING) {
             $alert = self::buildUpdateIfDue($now, $notifiedAt, $notifiedNearest, $nearest, $alertRadius, $window);
         }
 
-        // Record the decision now, inside the lock. A muted alert counts as
-        // announced too, so an expiring mute does not release a burst of
-        // backdated alerts.
-        if ($alert !== null && ($notify || $muted)) {
-            $changes['notified_level'] = $alert->kind === Alert::KIND_ALL_CLEAR ? self::LEVEL_CLEAR : $level;
+        // Record the decision now, inside the lock — but only when this run is
+        // actually going to deliver it.
+        //
+        // While muted nothing is consumed: an alert raised during a mute is
+        // still pending when the mute expires, so a storm that started under a
+        // mute is announced rather than lost. A read-only evaluation
+        // ($notify false) likewise leaves the announcement state alone.
+        $deliver = $notify && !$muted;
+
+        if ($deliver && ($alert !== null || $resolvesTo !== null)) {
+            if ($alert !== null) {
+                $changes['notified_level'] = $alert->kind === Alert::KIND_ALL_CLEAR ? self::LEVEL_CLEAR : $level;
+            } else {
+                $changes['notified_level'] = $resolvesTo;
+            }
             $changes['notified_at'] = $now;
-            $changes['notified_nearest_mi'] = $nearestMi;
+            $changes['notified_nearest_mi'] = $alert !== null && $alert->kind !== Alert::KIND_ALL_CLEAR
+                ? $nearestMi
+                : null;
         }
 
         self::updateState($changes);
 
         return [
-            'alert' => $notify ? $alert : null,
+            'alert' => $deliver ? $alert : null,
             'muted' => $muted,
+            // Only worth a log line when the situation actually changed;
+            // a mute lasts many cron ticks.
+            'log_suppression' => $muted && $alert !== null && $level !== $previousLevel,
             'muted_until' => (int) ($state['muted_until'] ?? 0),
             'state' => self::publicState(),
         ];
@@ -265,11 +311,27 @@ final class AlertEngine
     }
 
     /** @param array<string,mixed>|null $nearest */
-    private static function buildAllClear(int $window, string $level, ?array $nearest = null): Alert
+    private static function buildAllClear(int $window, string $level, ?array $nearest = null, bool $fromWarning = true): Alert
     {
         $units = Settings::getString('units');
         $minutes = Settings::getInt('all_clear_minutes');
         $cooldownRadius = self::cooldownRadius();
+
+        // A watch that simply faded out was never a "go indoors" instruction,
+        // so telling people operations can resume would be confusing.
+        if (!$fromWarning) {
+            $alert = new Alert(
+                Alert::KIND_ALL_CLEAR,
+                sprintf('Storm cleared at %s', Settings::getString('venue_name')),
+                sprintf(
+                    'The storm has moved off — no lightning within %s for %d minutes.',
+                    Geo::formatDistance(Settings::getFloat('watch_radius_mi'), $units),
+                    $minutes
+                )
+            );
+            $alert->strikeCount = Strikes::countWithin(Settings::getFloat('display_radius_mi'), $window);
+            return $alert;
+        }
 
         $summary = sprintf(
             'No lightning inside the %s for %d minutes. Normal operations can resume.',
@@ -320,10 +382,24 @@ final class AlertEngine
         $realertMinutes = Settings::getInt('realert_minutes');
         $closerDelta = Settings::getFloat('closer_delta_mi');
 
+        // A reminder is only worth sending if lightning has actually struck
+        // since the last one. Without this, a storm that stopped an hour ago
+        // keeps generating "still active" messages for the whole cooldown.
+        $sinceNotified = max(1, $now - $notifiedAt);
+        if (Strikes::latestWithin($radius, $sinceNotified) === null) {
+            return null;
+        }
+
         $dueByTime = $realertMinutes > 0 && ($now - $notifiedAt) >= ($realertMinutes * 60);
+
+        // The engine runs far more often than once a minute during a storm, so
+        // a steadily approaching cell would otherwise fire an update per tick.
+        // This floor is deliberately independent of the repeat interval: a
+        // storm bearing down on the venue should not wait out a long one.
         $dueByDistance = $closerDelta > 0
             && $notifiedNearest !== null
-            && ($notifiedNearest - $nearestMi) >= $closerDelta;
+            && ($notifiedNearest - $nearestMi) >= $closerDelta
+            && ($now - $notifiedAt) >= self::MIN_UPDATE_SECONDS;
 
         if (!$dueByTime && !$dueByDistance) {
             return null;

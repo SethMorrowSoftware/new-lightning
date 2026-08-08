@@ -17,6 +17,8 @@ declare(strict_types=1);
 $mount = rtrim((string) getenv('SW_MOUNT'), '/');
 $root = dirname(__DIR__);
 $uri = (string) (parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/');
+$query = (string) ($_SERVER['QUERY_STRING'] ?? '');
+$suffix = $query !== '' ? '?' . $query : '';
 
 if ($mount !== '') {
     // Anything outside the mount belongs to the rest of the main domain.
@@ -27,7 +29,7 @@ if ($mount !== '') {
     }
     $rel = substr($uri, strlen($mount));
     if ($rel === '') {
-        header('Location: ' . $mount . '/', true, 301);
+        header('Location: ' . $mount . '/' . $suffix, true, 301);
         return true;
     }
 } else {
@@ -43,7 +45,7 @@ if (preg_match('#^/(?:config|data|src|bin|tests)(?:/|$)#', $rel)) {
 
 // Mirrors the canonical redirect that keeps /public/ out of the address bar.
 if (preg_match('#^/public(/.*)?$#', $rel, $m)) {
-    header('Location: ' . $mount . (($m[1] ?? '') !== '' ? $m[1] : '/'), true, 301);
+    header('Location: ' . $mount . (($m[1] ?? '') !== '' ? $m[1] : '/') . $suffix, true, 301);
     return true;
 }
 
