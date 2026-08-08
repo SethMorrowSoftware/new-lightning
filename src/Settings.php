@@ -13,6 +13,12 @@ final class Settings
     /** Sentinel a form posts to blank out a stored secret. */
     public const CLEAR_SECRET = '__sw_clear__';
 
+    /**
+     * How much of a provider's data window a poll interval may use. The slack
+     * absorbs a cron run that fires late, which on shared hosting is routine.
+     */
+    public const POLL_WINDOW_MARGIN = 0.5;
+
     /** @var array<string,mixed>|null */
     private static ?array $cache = null;
 
@@ -99,6 +105,17 @@ final class Settings
             // Records older than this are ignored, so an endpoint that returns
             // history cannot raise an alert for a storm that has long passed.
             'rest_max_age_minutes' => ['type' => 'int', 'default' => 20, 'min' => 1, 'max' => 1440],
+            // Some endpoints cap how large a radius they will answer for —
+            // Xweather's lightning/flash refuses anything over 40km. 0 means no
+            // cap. The request radius is clamped to this rather than rejected,
+            // because a too-large display radius should degrade to less map
+            // coverage, not to a failed poll.
+            'rest_max_radius_mi' => ['type' => 'float', 'default' => 0.0, 'min' => 0, 'max' => 5000],
+            // How far back the endpoint will serve. 0 means unknown/unlimited.
+            // When it is known, polling slower than this window drops strikes
+            // that fall between two polls, so it is validated against the idle
+            // cadence below.
+            'rest_data_window_minutes' => ['type' => 'int', 'default' => 0, 'min' => 0, 'max' => 1440],
             // 0 means unmetered. 15,000 is the Xweather free tier.
             'api_monthly_budget' => ['type' => 'int', 'default' => 15000, 'min' => 0, 'max' => 100000000],
             'rest_map_root'    => ['type' => 'string', 'default' => 'data', 'max' => 120],
@@ -281,6 +298,42 @@ final class Settings
         }
         if (isset($clean['timezone']) && !in_array($clean['timezone'], timezone_identifiers_list(), true)) {
             $errors['timezone'] = 'Unknown time zone. Use an identifier such as America/New_York.';
+        }
+        // A watch ring larger than the endpoint will answer for is not a
+        // cosmetic problem: strikes in the gap are never fetched, so the system
+        // stays green through a storm it cannot see. The display ring may
+        // exceed the cap — that only costs map coverage — but this may not.
+        $cap = (float) $merged['rest_max_radius_mi'];
+        if ($merged['provider'] === 'rest' && $cap > 0 && (float) $merged['watch_radius_mi'] > $cap) {
+            $errors['watch_radius_mi'] = sprintf(
+                'This data source only answers out to %s miles, so a %s mile watch radius would never see '
+                . 'the strikes it is meant to catch. Reduce the watch radius, or raise the endpoint limit on '
+                . 'the Data source tab if the provider allows more.',
+                rtrim(rtrim(number_format($cap, 1), '0'), '.'),
+                rtrim(rtrim(number_format((float) $merged['watch_radius_mi'], 1), '0'), '.')
+            );
+        }
+
+        // An endpoint that only serves the last N minutes has to be polled
+        // faster than N, or strikes land and expire between two polls and are
+        // never seen. Silence from a safety system reads as "all clear", so
+        // this is refused rather than warned about.
+        $window = (int) $merged['rest_data_window_minutes'];
+        if ($window > 0) {
+            $margin = (int) floor($window * 60 * self::POLL_WINDOW_MARGIN);
+            foreach (['rest_poll_seconds' => 'idle', 'rest_active_poll_seconds' => 'storm'] as $key => $label) {
+                if ((int) $merged[$key] > $margin) {
+                    $errors[$key] = sprintf(
+                        'This endpoint only serves the last %d minutes, so the %s poll must be %ds or less '
+                        . '(%d%% of the window, leaving room for a late cron run). Strikes arriving between '
+                        . 'two slower polls would never be seen.',
+                        $window,
+                        $label,
+                        $margin,
+                        (int) round(self::POLL_WINDOW_MARGIN * 100)
+                    );
+                }
+            }
         }
         if (!empty($merged['slack_enabled'])) {
             if ($merged['slack_mode'] === 'bot') {

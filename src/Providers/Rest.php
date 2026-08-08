@@ -148,11 +148,7 @@ final class Rest
             return self::failure('The request failed: ' . $error, $status);
         }
         if ($status < 200 || $status >= 300) {
-            $snippet = trim(mb_substr(strip_tags($body), 0, 200));
-            return self::failure(
-                sprintf('The endpoint returned HTTP %d.%s', $status, $snippet !== '' ? ' Response: ' . $snippet : ''),
-                $status
-            );
+            return self::failure(self::explainStatus($status, $body), $status);
         }
 
         $decoded = json_decode($body, true);
@@ -293,16 +289,71 @@ final class Rest
      */
     private static function substitute(string $url): string
     {
+        $radius = self::requestRadiusMi();
         return strtr($url, [
             '{lat}' => (string) Settings::getFloat('venue_lat'),
             '{lon}' => (string) Settings::getFloat('venue_lon'),
-            '{radius_mi}' => (string) Settings::getFloat('display_radius_mi'),
-            '{radius_km}' => (string) round(Settings::getFloat('display_radius_mi') * Geo::MILES_TO_KM, 3),
+            '{radius_mi}' => (string) $radius,
+            '{radius_km}' => (string) round($radius * Geo::MILES_TO_KM, 3),
             '{now}' => (string) time(),
             '{now_iso}' => gmdate('c'),
             '{since}' => (string) (time() - 3600),
             '{since_iso}' => gmdate('c', time() - 3600),
         ]);
+    }
+
+    /**
+     * The radius to ask the endpoint for: the display radius, clamped to
+     * whatever the provider will actually answer for. Asking Xweather's
+     * lightning/flash for more than 40km is an error, not a wider answer, so a
+     * 30 mile display radius would otherwise fail every poll.
+     */
+    public static function requestRadiusMi(): float
+    {
+        $radius = Settings::getFloat('display_radius_mi');
+        $cap = Settings::getFloat('rest_max_radius_mi');
+        return $cap > 0 ? min($radius, $cap) : $radius;
+    }
+
+    /**
+     * Turn a failed HTTP status into something a person can act on. The raw
+     * body is kept on the end, but the leading sentence should already say what
+     * went wrong — an operator reading this is usually not the person who set
+     * the credentials up.
+     */
+    public static function explainStatus(int $status, string $body): string
+    {
+        $snippet = trim(mb_substr(strip_tags($body), 0, 200));
+        $decoded = json_decode($body, true);
+        $code = '';
+        $description = '';
+        if (is_array($decoded) && isset($decoded['error']) && is_array($decoded['error'])) {
+            $code = is_string($decoded['error']['code'] ?? null) ? $decoded['error']['code'] : '';
+            $description = is_string($decoded['error']['description'] ?? null) ? $decoded['error']['description'] : '';
+        }
+
+        // Xweather answers 401 for both "who are you" and "not on your plan",
+        // which is why these have to be told apart by the error code.
+        if ($code === 'insufficient_scope' || stripos($description, 'subscription level') !== false) {
+            return 'The credentials were accepted, but this account\'s plan does not cover this endpoint '
+                . '(HTTP ' . $status . ' insufficient_scope). On Xweather, the free and standard plans include '
+                . 'lightning/flash but not the plain lightning endpoint, which needs the Lightning Enterprise '
+                . 'add-on. Pick the "lightning flash" option from Quick setup on the Data source tab, or add the '
+                . 'add-on to the account. Response: ' . $snippet;
+        }
+        if ($code === 'invalid_client' || $code === 'unauthorized' || $status === 401 || $status === 403) {
+            return 'The endpoint rejected the credentials (HTTP ' . $status . ($code !== '' ? ' ' . $code : '') . '). '
+                . 'Check the ID and secret on the Data source tab, and that the account is active. Response: ' . $snippet;
+        }
+        if ($status === 429) {
+            return 'The endpoint is rate limiting these requests (HTTP 429). Slow the poll intervals down on the '
+                . 'Data source tab. Response: ' . $snippet;
+        }
+        if ($status >= 500) {
+            return 'The provider had a server error (HTTP ' . $status . '). This is their end, not the '
+                . 'configuration; polling will retry. Response: ' . $snippet;
+        }
+        return sprintf('The endpoint returned HTTP %d.%s', $status, $snippet !== '' ? ' Response: ' . $snippet : '');
     }
 
     /** @return array<int,string> */

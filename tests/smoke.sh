@@ -182,6 +182,36 @@ code=$(curl -s -o "${WORK}/badradius.html" -w '%{http_code}' -c "$JAR" -b "$JAR"
   -d "display_radius_mi=30" "${BASE}/settings.php?tab=alerts")
 contains "${WORK}/badradius.html" "Nothing was saved" "an inconsistent radius set is rejected"
 
+# The data source tab, and the provider limits that keep a capped endpoint
+# honest. A watch ring wider than the feed answers for is the dangerous case:
+# it looks fine and silently stops seeing storms.
+code=$(curl -s -o "${WORK}/source.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/settings.php?tab=source")
+status_is 200 "$code" "the data source tab renders"
+contains "${WORK}/source.html" "Largest radius the endpoint allows" "the radius cap field is present"
+contains "${WORK}/source.html" "Endpoint serves the last" "the data window field is present"
+contains "${WORK}/source.html" "lightning flash" "the free-tier Xweather preset is offered"
+
+code=$(curl -s -o "${WORK}/capped.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "provider=rest" \
+  -d "rest_endpoint=https://data.api.xweather.com/lightning/flash/closest?p={lat},{lon}" \
+  -d "rest_max_radius_mi=25" -d "rest_data_window_minutes=5" \
+  -d "rest_poll_seconds=120" -d "rest_active_poll_seconds=60" "${BASE}/settings.php?tab=source")
+contains "${WORK}/capped.html" "Settings saved" "a capped endpoint inside its limits saves"
+
+code=$(curl -s -o "${WORK}/slowpoll.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "rest_poll_seconds=300" "${BASE}/settings.php?tab=source")
+contains "${WORK}/slowpoll.html" "Nothing was saved" "polling slower than the endpoint's data window is rejected"
+
+code=$(curl -s -o "${WORK}/widewatch.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "alert_radius_mi=10" -d "watch_radius_mi=30" \
+  -d "display_radius_mi=30" "${BASE}/settings.php?tab=alerts")
+contains "${WORK}/widewatch.html" "Nothing was saved" "a watch radius beyond the endpoint cap is rejected"
+
+# Put the source back so the rest of the run is unaffected.
+curl -s -o /dev/null -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "provider=simulator" \
+  -d "rest_max_radius_mi=0" -d "rest_data_window_minutes=0" "${BASE}/settings.php?tab=source"
+
 group "Scheduled runs and ingest"
 CRON_TOKEN=$(php -r '
 require "'"${ROOT}"'/src/bootstrap.php";

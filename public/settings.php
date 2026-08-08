@@ -47,7 +47,8 @@ $tabFields = [
     'source' => ['provider', 'worker_seconds', 'blitz_servers', 'blitz_init_json', 'rest_endpoint',
                  'rest_api_key', 'rest_api_secret', 'rest_auth_mode', 'rest_auth_name',
                  'rest_auth_secret_name', 'rest_extra_headers', 'rest_poll_seconds',
-                 'rest_active_poll_seconds', 'rest_max_age_minutes', 'api_monthly_budget',
+                 'rest_active_poll_seconds', 'rest_max_age_minutes', 'rest_max_radius_mi',
+                 'rest_data_window_minutes', 'api_monthly_budget',
                  'rest_map_root', 'rest_map_lat', 'rest_map_lon', 'rest_map_time',
                  'rest_time_format'],
     'system' => ['retention_hours', 'dashboard_public', 'public_base_url'],
@@ -690,8 +691,8 @@ View::header('settings');
         <label for="restPreset">Fill in the settings for a known provider</label>
         <select id="restPreset">
           <option value="">Choose a provider…</option>
-          <option value="xweather">Xweather — lightning, filter=all</option>
-          <option value="xweather_within">Xweather — lightning within a radius</option>
+          <option value="xweather_flash">Xweather — lightning flash (included with every plan)</option>
+          <option value="xweather_enterprise">Xweather — lightning (needs the Enterprise add-on)</option>
         </select>
         <div class="field-note">
           This only fills the fields in below; nothing is saved until you press Save. Your own
@@ -784,6 +785,40 @@ View::header('settings');
         Polling slowly when the sky is clear and quickly during a storm is what makes a metered plan
         affordable without being slow to notice the first strike.
       </div>
+
+      <div class="field-grid2" style="margin-top:14px;">
+        <div class="field">
+          <label for="rest_max_radius_mi">Largest radius the endpoint allows (mi)</label>
+          <input type="number" step="0.1" id="rest_max_radius_mi" name="rest_max_radius_mi" min="0" max="5000" value="<?= Http::e($value('rest_max_radius_mi')) ?>" class="<?= $errorClass('rest_max_radius_mi') ?>">
+          <?= $errorNote('rest_max_radius_mi') ?>
+          <div class="field-note">
+            0 for no limit. Requests are clamped to this instead of failing.
+            Xweather's <code>lightning/flash</code> caps at <b>25</b> (40km).
+          </div>
+        </div>
+        <div class="field">
+          <label for="rest_data_window_minutes">Endpoint serves the last (min)</label>
+          <input type="number" id="rest_data_window_minutes" name="rest_data_window_minutes" min="0" max="1440" value="<?= Http::e($value('rest_data_window_minutes')) ?>" class="<?= $errorClass('rest_data_window_minutes') ?>">
+          <?= $errorNote('rest_data_window_minutes') ?>
+          <div class="field-note">
+            0 if unknown. When set, polling is held to half of it so a late cron
+            run cannot step over strikes. <code>lightning/flash</code> is <b>5</b>.
+          </div>
+        </div>
+      </div>
+      <?php
+      $capMi = (float) $value('rest_max_radius_mi');
+      $displayMi = (float) $value('display_radius_mi');
+      if ($capMi > 0 && $displayMi > $capMi):
+      ?>
+        <div class="notice warn" style="margin-top:10px;">
+          Your display radius is <b><?= Http::e(rtrim(rtrim(number_format($displayMi, 1), '0'), '.')) ?> mi</b> but this
+          endpoint will only answer out to <b><?= Http::e(rtrim(rtrim(number_format($capMi, 1), '0'), '.')) ?> mi</b>,
+          so the map will not show strikes beyond that ring. Alerting is unaffected as long as your
+          <b>watch radius</b> stays inside the cap — it is currently
+          <b><?= Http::e(rtrim(rtrim(number_format((float) $value('watch_radius_mi'), 1), '0'), '.')) ?> mi</b>.
+        </div>
+      <?php endif; ?>
 
       <div class="panel-title" style="margin-top:22px;">Plan allowance</div>
       <?php $meter = \StormWatch\ApiBudget::summary(\StormWatch\Providers\Rest::METER); ?>
