@@ -368,6 +368,151 @@ T::group('Alert state machine');
     Settings::put(['all_clear_minutes' => 30]);
 }
 
+T::group('Mount point detection');
+{
+    // The SCRIPT_NAME / REQUEST_URI pairs below were captured from a real
+    // Apache 2.4 serving this app's own .htaccess from a subfolder. Under that
+    // rewrite SCRIPT_NAME carries a "/public" segment the browser never sees,
+    // and basePath() has to see through it — otherwise the session cookie is
+    // scoped to a path the visitor is not on and sign-in fails.
+    $mount = static function (string $script, string $uri): string {
+        $_SERVER['SCRIPT_NAME'] = $script;
+        $_SERVER['REQUEST_URI'] = $uri;
+        \StormWatch\Http::resetBasePath();
+        return \StormWatch\Http::basePath();
+    };
+
+    T::same('/stormwatch', $mount('/stormwatch/public/index.php', '/stormwatch/'), 'subfolder root');
+    T::same('/stormwatch', $mount('/stormwatch/public/settings.php', '/stormwatch/settings.php'), 'subfolder page');
+    T::same('/stormwatch', $mount('/stormwatch/public/api/state.php', '/stormwatch/api/state.php'), 'subfolder API endpoint');
+    T::same('/stormwatch', $mount('/stormwatch/public/settings.php', '/stormwatch/settings.php?tab=slack'), 'query string is ignored');
+    T::same('/apps/storm', $mount('/apps/storm/public/index.php', '/apps/storm/'), 'nested subfolder');
+
+    T::same('', $mount('/index.php', '/'), 'document root pointed at public/');
+    T::same('', $mount('/settings.php', '/settings.php'), 'document root, page');
+    T::same('', $mount('/api/state.php', '/api/state.php'), 'document root, API endpoint');
+    T::same('', $mount('/public/settings.php', '/settings.php'), 'whole app at the domain root');
+
+    // Someone who reaches the internal path directly must still get a base
+    // path that matches the URL they are on, or their session breaks.
+    T::same('/stormwatch/public', $mount('/stormwatch/public/settings.php', '/stormwatch/public/settings.php'), 'direct hit on the internal path stays consistent');
+    // ...and an app that genuinely lives in a folder called "public".
+    T::same('/public', $mount('/public/settings.php', '/public/settings.php'), 'a directory really named public is left alone');
+
+    // The explicit override wins over anything inferred.
+    Config::override(['base_path' => '/stormwatch']);
+    T::same('/stormwatch', $mount('/anything/public/index.php', '/x'), 'configured base path overrides detection');
+    Config::override(['base_path' => 'stormwatch/']);
+    T::same('/stormwatch', $mount('/anything/public/index.php', '/x'), 'the override is normalised');
+    Config::override(['base_path' => '/']);
+    T::same('', $mount('/anything/public/index.php', '/x'), 'an override of "/" means the root');
+    Config::override(['base_path' => '']);
+
+    // Two installs on one domain must not share a session cookie or storage.
+    $mount('/stormwatch/public/index.php', '/stormwatch/');
+    $nameA = \StormWatch\Http::sessionName();
+    $storeA = \StormWatch\Http::storagePrefix();
+    $mount('/weather/public/index.php', '/weather/');
+    T::ok($nameA !== \StormWatch\Http::sessionName(), 'session cookie names differ per mount');
+    T::ok($storeA !== \StormWatch\Http::storagePrefix(), 'browser storage prefixes differ per mount');
+
+    $mount('/index.php', '/');
+    T::same('stormwatch_session', \StormWatch\Http::sessionName(), 'a root install keeps the plain cookie name');
+
+    unset($_SERVER['SCRIPT_NAME'], $_SERVER['REQUEST_URI']);
+    \StormWatch\Http::resetBasePath();
+}
+
+T::group('Alert cooldown');
+{
+    // "Alert when lightning is within X miles, then do not alert again until
+    // it has been Y minutes without any strikes, then say it is safe."
+    $applyCooldown = static function (int $minutes, string $scope = 'alert', int $repeat = 0, float $closer = 0.0): void {
+        Settings::put([
+            'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+            'all_clear_minutes' => $minutes, 'cooldown_scope' => $scope,
+            'realert_minutes' => $repeat, 'closer_delta_mi' => $closer,
+            'notify_watch' => false, 'notify_all_clear' => true,
+        ]);
+    };
+
+    // Defaults must be the quiet ones, or a storm produces a stream of alerts.
+    Settings::flushCache();
+    $defaults = Settings::defaults();
+    T::same(0, $defaults['realert_minutes'], 'repeat alerts are off by default');
+    T::same(0.0, $defaults['closer_delta_mi'], 'closing-in updates are off by default');
+    T::same('alert', $defaults['cooldown_scope'], 'the cooldown watches the alert radius by default');
+
+    // A 40-minute storm, one strike a minute, then quiet. Exactly one alert
+    // and, once the cooldown expires, exactly one all clear.
+    resetData();
+    $applyCooldown(30);
+    for ($minute = 0; $minute <= 40; $minute++) {
+        placeStrike(5.0, ($minute * 37) % 360, (40 - $minute) * 60);
+        AlertEngine::evaluate();
+    }
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'a 40-minute storm produces exactly one alert');
+    T::same(0, count(Events::recent(200, 'alert.update')), 'no update alerts are sent during the storm');
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no all clear while strikes are still arriving');
+    T::same('warning', AlertEngine::publicState()['level'], 'still in warning at the end of the storm');
+
+    // 29 minutes of quiet is not enough.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (29 * 60)]);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'still holding one minute short of the cooldown');
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no early all clear');
+
+    // 31 minutes is.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (31 * 60)]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'clears once the cooldown expires');
+    T::same(1, count(Events::recent(200, 'alert.all_clear')), 'exactly one all clear');
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'still only one alert for the whole storm');
+
+    // A fresh storm afterwards alerts again.
+    placeStrike(4.0, 12.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'the next storm alerts again');
+
+    // Cooldown scope: a storm that triggers an alert, then drifts out to sit
+    // between the alert and watch rings while still throwing lightning.
+    $storyThenDrift = static function (string $scope): string {
+        resetData();
+        Settings::put([
+            'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+            'all_clear_minutes' => 30, 'cooldown_scope' => $scope,
+            'realert_minutes' => 0, 'closer_delta_mi' => 0.0,
+            'notify_watch' => false, 'notify_all_clear' => true,
+        ]);
+        placeStrike(5.0, 40.0);                 // inside the alert ring
+        AlertEngine::evaluate();                // -> warning
+        // The alert ring falls quiet, but the storm keeps striking at 15 mi.
+        Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (31 * 60)]);
+        placeStrike(15.0, 41.0);
+        AlertEngine::evaluate();
+        return AlertEngine::publicState()['level'];
+    };
+
+    T::same('watch', $storyThenDrift('alert'), 'scope "alert" stands down once the alert ring is quiet');
+    T::same(1, count(Events::recent(200, 'alert.all_clear')), 'and announces the all clear');
+
+    T::same('warning', $storyThenDrift('watch'), 'scope "watch" holds the warning while the storm circles');
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no all clear while the wider ring is still active');
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'holding the warning does not re-alert');
+
+    // Opt-in repeats still work for operators who want them.
+    resetData();
+    $applyCooldown(30, 'alert', 1, 0.0);
+    placeStrike(5.0, 77.0);
+    AlertEngine::evaluate();
+    Database::instance()->run('UPDATE alert_state SET notified_at = ? WHERE id = 1', [time() - 120]);
+    placeStrike(5.0, 78.0);
+    AlertEngine::evaluate();
+    T::ok(count(Events::recent(200, 'alert.update')) >= 1, 'an opt-in repeat interval still sends updates');
+
+    $applyCooldown(30);
+}
+
 T::group('Concurrent evaluation');
 {
     // tick.php and worker.php run from the same cron minute and can overlap.

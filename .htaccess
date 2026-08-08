@@ -1,11 +1,16 @@
-# Storm Watch — root guard.
+# Storm Watch — mount point.
 #
-# This file only matters for the "simple" deployment, where the whole folder is
-# uploaded inside public_html and the document root cannot be changed. It keeps
-# the application internals unreachable and serves everything from public/.
+# This file makes the "upload the whole folder" deployment work, which is what
+# you get when Storm Watch lives in a subfolder of an existing site:
 #
-# In the recommended deployment the document root points at public/ directly and
-# this file is never consulted.
+#   public_html/stormwatch/   ->   https://example.com/stormwatch/
+#
+# It keeps the application internals unreachable and serves every request out
+# of public/ without that folder ever appearing in a URL.
+#
+# If instead you can point a document root straight at public/ (an addon domain
+# or subdomain in cPanel), that is the tidier arrangement and this file is
+# never consulted.
 
 DirectoryIndex public/index.php index.php
 
@@ -17,8 +22,18 @@ Options -Indexes
   # Application internals are never web content.
   RewriteRule ^(?:config|data|src|bin|tests)(?:/|$) - [F,L]
 
-  # Serve everything else out of public/.
-  RewriteCond %{REQUEST_URI} !/public/
+  # Keep the internal layout out of the address bar: a browser that lands on
+  # /public/... is sent to the clean URL. REDIRECT_STATUS is empty only on a
+  # real client request, so the internal rewrite below never trips this.
+  # The target is built from REQUEST_URI because a relative substitution here
+  # would be resolved against the filesystem and leak the server path.
+  RewriteCond %{ENV:REDIRECT_STATUS} ^$
+  RewriteCond %{REQUEST_URI} ^(.*?)/public(/.*)?$
+  RewriteRule ^public(?:/|$) %1%2 [R=301,L]
+
+  # Serve everything from public/. Matching on the already-rewritten path
+  # rather than on REQUEST_URI is what keeps this from looping.
+  RewriteRule ^public/ - [L]
   RewriteRule ^(.*)$ public/$1 [L]
 </IfModule>
 

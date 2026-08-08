@@ -226,6 +226,87 @@ contains "${WORK}/tick.txt" "tick ok" "bin/tick.php runs cleanly"
 php "${ROOT}/bin/worker.php" -v >"${WORK}/worker.txt" 2>&1
 contains "${WORK}/worker.txt" "worker" "bin/worker.php runs cleanly"
 
+group "Subfolder mount"
+# Storm Watch is normally installed in a subfolder of an existing site. The
+# built-in server ignores .htaccess, so tests/router.php reproduces what Apache
+# does there: /mount/x is served from public/x with SCRIPT_NAME carrying the
+# extra /public segment. Everything the browser sees has to stay on /mount.
+MOUNT="/stormwatch"
+SUBPORT=$((PORT + 1))
+SUBBASE="http://127.0.0.1:${SUBPORT}${MOUNT}"
+SUBJAR="${WORK}/sub.txt"
+
+SW_MOUNT="$MOUNT" php -S "127.0.0.1:${SUBPORT}" -t "${ROOT}" "${ROOT}/tests/router.php" \
+  >"${WORK}/sub-server.log" 2>&1 &
+SUB_PID=$!
+for _ in $(seq 1 40); do
+  if curl -s -o /dev/null "${SUBBASE}/login.php"; then break; fi
+  sleep 0.25
+done
+
+curl -s -c "$SUBJAR" -b "$SUBJAR" -o "${WORK}/sub-login.html" "${SUBBASE}/login.php"
+# Netscape cookie jar: domain, tailmatch, path, secure, expires, name, value.
+# httponly cookies are written with a "#HttpOnly_" prefix on the domain.
+COOKIE_PATH=$(awk -F'\t' '/stormwatch/ && NF >= 6 { print $3; exit }' "$SUBJAR")
+if [ "$COOKIE_PATH" = "$MOUNT" ]; then
+  green "the session cookie is scoped to the mount, not to /public"
+else
+  red "the session cookie is scoped to the mount (got '${COOKIE_PATH:-none}', wanted '${MOUNT}')"
+fi
+
+contains "${WORK}/sub-login.html" "${MOUNT}/assets/css/app.css" "asset URLs carry the mount path"
+if grep -qF "${MOUNT}/public/" "${WORK}/sub-login.html"; then
+  red "no URL leaks the internal public/ folder"
+else
+  green "no URL leaks the internal public/ folder"
+fi
+
+# The real test: sign in at the clean subfolder URL. Before the mount-point
+# fix this failed with "session expired" because the cookie path did not match.
+SUBCSRF=$(grep -o 'name="csrf_token" value="[^"]*"' "${WORK}/sub-login.html" | head -1 | sed 's/.*value="//;s/"//')
+code=$(curl -s -o "${WORK}/sub-auth.html" -w '%{http_code}' -c "$SUBJAR" -b "$SUBJAR" \
+  -d "csrf_token=${SUBCSRF}" -d "username=smoketest" -d "password=a-good-test-passphrase" \
+  "${SUBBASE}/login.php")
+status_is 302 "$code" "signing in works at the subfolder URL"
+if grep -qF "session expired" "${WORK}/sub-auth.html"; then
+  red "the session survives the login POST"
+else
+  green "the session survives the login POST"
+fi
+
+code=$(curl -s -o "${WORK}/sub-dash.html" -w '%{http_code}' -c "$SUBJAR" -b "$SUBJAR" "${SUBBASE}/index.php")
+status_is 200 "$code" "the dashboard loads at the subfolder URL"
+contains "${WORK}/sub-dash.html" "\"stateUrl\":\"${MOUNT}/api/state.php\"" "the dashboard polls the mounted API path"
+contains "${WORK}/sub-dash.html" "\"loginUrl\":\"${MOUNT}/login.php\"" "the sign-in redirect target is mounted"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -c "$SUBJAR" -b "$SUBJAR" "${SUBBASE}/api/state.php")
+status_is 200 "$code" "the API answers at the subfolder URL"
+
+code=$(curl -s -o "${WORK}/sub-settings.html" -w '%{http_code}' -c "$SUBJAR" -b "$SUBJAR" "${SUBBASE}/settings.php?tab=system")
+status_is 200 "$code" "settings load at the subfolder URL"
+
+# The kiosk and web-cron links are absolute, so they follow the public base URL
+# rather than the current request. Point it at the mount, as a real subfolder
+# install would have recorded at setup, and check the links follow.
+php "${ROOT}/bin/stormwatch.php" set public_base_url "http://127.0.0.1:${SUBPORT}${MOUNT}" >/dev/null 2>&1
+curl -s -o "${WORK}/sub-settings2.html" -c "$SUBJAR" -b "$SUBJAR" "${SUBBASE}/settings.php?tab=system"
+contains "${WORK}/sub-settings2.html" "${MOUNT}/api/cron.php" "the web cron URL includes the mount path"
+contains "${WORK}/sub-settings2.html" "${MOUNT}/index.php?kiosk=" "the kiosk URL includes the mount path"
+php "${ROOT}/bin/stormwatch.php" set public_base_url "" >/dev/null 2>&1
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "${SUBBASE}/public/settings.php")
+status_is 301 "$code" "a direct hit on /public is redirected to the clean URL"
+
+for path in "src/Http.php" "config/config.php" "data/stormwatch.sqlite" "bin/tick.php"; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${SUBBASE}/${path}")
+  status_is 403 "$code" "${path} is not reachable through the mount"
+done
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${SUBPORT}/index.php")
+status_is 404 "$code" "nothing is served outside the mount"
+
+kill "$SUB_PID" 2>/dev/null; wait "$SUB_PID" 2>/dev/null
+
 group "Sign out"
 curl -s -o /dev/null -c "$JAR" -b "$JAR" "${BASE}/logout.php"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/api/state.php")

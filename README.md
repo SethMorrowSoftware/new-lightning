@@ -49,11 +49,25 @@ tells you exactly what is missing.
 
 ### 1. Upload
 
-Two layouts work. **A** is more secure and is what you should use if your host
-lets you set a document root — which cPanel does for any addon domain or
-subdomain.
+**Subfolder of an existing site — the usual case.** Upload the whole repository
+into a folder under `public_html`:
 
-**Layout A — recommended.** Put the application outside the web root:
+```
+/home/USER/public_html/stormwatch/
+```
+
+and visit `https://yourdomain.com/stormwatch/`. Nothing else to configure: the
+root `.htaccess` serves every request out of `public/`, blocks `config/`,
+`data/`, `src/`, `bin/` and `tests/`, and keeps `public` itself out of the
+address bar. It needs `mod_rewrite`, which cPanel enables by default.
+
+The folder name is yours to choose — `stormwatch`, `weather`, `lightning` —
+and it can be nested (`/tools/stormwatch/`). The app works out where it is
+mounted on its own.
+
+**Its own domain or subdomain.** If you would rather give Storm Watch its own
+address, put the application outside the web root and point the document root
+at `public/`:
 
 ```
 /home/USER/stormwatch/          <- upload the whole repository here
@@ -61,18 +75,9 @@ subdomain.
 ```
 
 In cPanel: **Domains** → **Create A New Domain** (or edit an existing one) and
-set the document root to `/home/USER/stormwatch/public`.
-
-**Layout B — no document root control.** Upload the whole repository into a
-folder under `public_html`:
-
-```
-/home/USER/public_html/stormwatch/
-```
-
-Then visit `https://yourdomain.com/stormwatch/`. The included root `.htaccess`
-forwards requests into `public/` and blocks `config/`, `data/`, `src/`, `bin/`
-and `tests/`. This relies on `mod_rewrite`, which cPanel enables by default.
+set the document root to `/home/USER/stormwatch/public`. This keeps the
+application files off the web entirely, so it is the tidier arrangement where
+it is available.
 
 ### 2. Permissions
 
@@ -197,23 +202,48 @@ fine.
 
 ---
 
-## Alert rules
+## Alert rules and the cooldown
 
-Settings → **Alert rules**.
+Settings → **Alert rules**. Out of the box the behaviour is:
+
+> **Alert** as soon as lightning strikes within **10 miles** of the venue.
+> Then **stay silent** until there have been **30 minutes** with no further
+> strikes within 10 miles, and post the **all clear**.
+> One alert and one all clear per storm — nothing in between.
+
+The settings screen prints that sentence back to you as you change the numbers,
+so there is no guessing about what the configuration adds up to.
 
 | Setting | Default | What it does |
 |---|---|---|
-| Alert radius | 10 mi | A strike inside this raises a warning and notifies |
-| Watch radius | 20 mi | Early heads-up as a storm approaches |
+| Alert radius | 10 mi | A strike inside this raises the alert |
+| Watch radius | 20 mi | Early heads-up ring; notifications off by default |
 | Display radius | 30 mi | What gets stored and drawn on the map |
-| All clear after | 30 min | Quiet time inside the alert radius before standing down |
-| Repeat while active | 15 min | Reminder cadence during a warning; 0 for one alert only |
-| Re-alert if closer by | 3 mi | Sends an update when the storm closes in this much |
+| Cooldown | 30 min | Quiet minutes required before the all clear |
+| Cooldown scope | Alert radius | Which strikes keep the cooldown running |
+| Repeat the alert every | Off | Opt-in reminder while the hold is in force |
+| Re-alert if closer by | Off | Opt-in update if the storm heads straight at you |
 
 Ten miles and thirty minutes are the common choices for outdoor venues:
 lightning routinely strikes that far from its parent storm, and the thirty
 minute hold is the widely used all-clear guidance. Set them to whatever your
 own safety policy requires.
+
+**The cooldown is what stops alert spam.** A storm throwing lightning for an
+hour produces exactly one Slack message, not one per strike. Because the all
+clear only follows a full quiet period, two alerts can never be closer together
+than the cooldown you set.
+
+**Cooldown scope** decides which strikes count as "no strikes". The default —
+only those inside the alert radius — matches standard lightning-safety practice.
+Widen it to the watch or display ring if you would rather a storm circling just
+outside the alert radius keep the venue on hold instead of triggering an early
+all clear.
+
+If the alert radius falls quiet while a storm is still being tracked further
+out, the all clear is still sent — staff who were told to go indoors are owed
+the word that they can come back out — and the message says the storm is still
+around.
 
 The **Mute 30m** button on the dashboard suppresses Slack and email while
 leaving the map and state live — for when you are already standing in the rain
@@ -311,6 +341,9 @@ into external monitoring.
 | Email never arrives | Switch to SMTP and use a real mailbox on the domain as the "from" address. |
 | The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |
 | Setup wizard says a folder is not writable | Set `config/` and `data/` to `0755` in File Manager. |
+| Sign-in keeps saying "session expired" | The app has mis-detected where it is mounted. Set `base_path` in `config/config.php` to the folder, e.g. `'/stormwatch'`. |
+| Links in Slack or email point at the wrong address | Set **Public address of this dashboard** on the System settings tab, including the subfolder. |
+| URLs show `/public/` in them | An old bookmark. It redirects to the clean URL on its own; nothing to fix. |
 
 **Vendoring Leaflet.** If your network blocks CDNs, download Leaflet 1.9.4 and
 drop `leaflet.js`, `leaflet.css` and its `images/` folder into
@@ -323,10 +356,19 @@ statistics and the strike log are unaffected.
 ## Development
 
 ```bash
-php tests/run.php     # unit tests: geo, LZW, alert state machine, Slack payloads, crypto
+php tests/run.php     # unit tests: geo, LZW, alert state machine, cooldown, mount detection
 ./tests/smoke.sh      # end-to-end: installs into a scratch dir and drives real HTTP
 php -S localhost:8000 -t public
+
+# Serve it the way a subfolder install is served, to test that arrangement:
+SW_MOUNT=/stormwatch php -S localhost:8000 -t . tests/router.php
+# then browse http://localhost:8000/stormwatch/
 ```
+
+`tests/router.php` exists because the built-in server ignores `.htaccess`. It
+reproduces what Apache does in a subfolder — serving `/mount/x` from `public/x`
+while reporting `SCRIPT_NAME` with the extra `/public` segment — so the mount
+detection is exercised for real rather than assumed.
 
 `smoke.sh` stashes and restores any existing local installation, so it is safe
 to run against a working checkout.

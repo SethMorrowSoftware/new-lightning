@@ -8,6 +8,7 @@
   var boot = JSON.parse(document.getElementById('sw-boot').textContent);
   var MI_TO_M = 1609.344;
   var MI_TO_KM = 1.609344;
+  var STORE = boot.storagePrefix || 'sw_';
 
   var state = {
     maxId: 0,
@@ -15,7 +16,7 @@
     strikes: [],           // newest first, capped
     markers: {},           // id -> leaflet marker
     notifPermission: (typeof Notification !== 'undefined') ? Notification.permission : 'denied',
-    notifEnabled: localStorage.getItem('sw_browser_notifications') === '1',
+    notifEnabled: localStorage.getItem(STORE + 'browser_notifications') === '1',
     lastAlertSignature: null,
     pollTimer: null,
     failures: 0
@@ -456,7 +457,7 @@
     notifToggle.addEventListener('change', function () {
       if (!notifToggle.checked) {
         state.notifEnabled = false;
-        localStorage.setItem('sw_browser_notifications', '0');
+        localStorage.setItem(STORE + 'browser_notifications', '0');
         return;
       }
       if (typeof Notification === 'undefined') {
@@ -468,7 +469,7 @@
         state.notifPermission = permission;
         if (permission === 'granted') {
           state.notifEnabled = true;
-          localStorage.setItem('sw_browser_notifications', '1');
+          localStorage.setItem(STORE + 'browser_notifications', '1');
           toast('Browser notifications are on for this device.', 'ok');
         } else {
           notifToggle.checked = false;
@@ -545,7 +546,7 @@
     return fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
       .then(function (response) {
         if (response.status === 401) {
-          window.location.href = 'login.php';
+          window.location.href = boot.loginUrl || 'login.php';
           throw new Error('Signed out');
         }
         if (!response.ok) throw new Error('HTTP ' + response.status);

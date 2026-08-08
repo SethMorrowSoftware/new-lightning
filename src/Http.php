@@ -10,6 +10,8 @@ final class Http
 {
     private static bool $sessionStarted = false;
 
+    private static ?string $basePath = null;
+
     public static function startSession(): void
     {
         if (self::$sessionStarted || PHP_SAPI === 'cli') {
@@ -19,7 +21,10 @@ final class Http
             self::$sessionStarted = true;
             return;
         }
-        session_name('stormwatch_session');
+        // Subfolder hosting means sharing a domain with whatever else lives
+        // there, so tie the cookie name to the mount point: two installs on
+        // one domain then cannot overwrite each other's session.
+        session_name(self::sessionName());
         session_set_cookie_params([
             'lifetime' => 0,
             'path' => self::basePath() ?: '/',
@@ -45,16 +50,74 @@ final class Http
         return false;
     }
 
-    /** Directory the app is served from, e.g. "/stormwatch" or "". */
+    /**
+     * The URL path the app is mounted at, as the browser sees it —
+     * "/stormwatch" for a subfolder install, "" at a domain root.
+     *
+     * Getting this right is what makes subfolder hosting work: it drives every
+     * generated link, every asset URL, and the session cookie path. If the
+     * cookie path does not match the URLs people actually visit, the browser
+     * stops sending the session and sign-in fails with "session expired".
+     */
     public static function basePath(): string
     {
+        if (self::$basePath !== null) {
+            return self::$basePath;
+        }
+
+        // An explicit setting always wins — the escape hatch for a rewrite
+        // arrangement this cannot infer.
+        $configured = (string) Config::get('base_path', '');
+        if ($configured !== '') {
+            $trimmed = trim($configured, '/');
+            return self::$basePath = ($trimmed === '' ? '' : '/' . $trimmed);
+        }
+
         $script = (string) ($_SERVER['SCRIPT_NAME'] ?? '');
-        $dir = str_replace('\\', '/', dirname($script));
+        $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
+
         // API endpoints live one level deeper; normalise back to the app root.
         if (substr($dir, -4) === '/api') {
             $dir = substr($dir, 0, -4);
         }
-        return $dir === '/' || $dir === '.' ? '' : rtrim($dir, '/');
+
+        // Subfolder install: the .htaccess rewrites /mount/x to /mount/public/x,
+        // so SCRIPT_NAME carries a "/public" segment the visitor never sees.
+        // Drop it — but only when the request confirms the visitor is not
+        // genuinely browsing a directory that really is called "public".
+        if ($dir === '/public' || substr($dir, -7) === '/public') {
+            $requestPath = (string) (parse_url((string) ($_SERVER['REQUEST_URI'] ?? ''), PHP_URL_PATH) ?: '');
+            if ($requestPath !== $dir && strpos($requestPath, $dir . '/') !== 0) {
+                $dir = substr($dir, 0, -7);
+            }
+        }
+
+        $dir = rtrim($dir, '/');
+        return self::$basePath = (($dir === '' || $dir === '.') ? '' : $dir);
+    }
+
+    /** Forget the cached mount point. For tests. */
+    public static function resetBasePath(): void
+    {
+        self::$basePath = null;
+    }
+
+    /** Session cookie name, scoped to this mount point. */
+    public static function sessionName(): string
+    {
+        $base = self::basePath();
+        return $base === ''
+            ? 'stormwatch_session'
+            : 'stormwatch_' . substr(hash('sha256', $base), 0, 8);
+    }
+
+    /**
+     * Prefix for browser-local storage keys, so a second install on the same
+     * domain does not read the first one's preferences.
+     */
+    public static function storagePrefix(): string
+    {
+        return 'sw_' . substr(hash('sha256', self::basePath()), 0, 8) . '_';
     }
 
     public static function url(string $path = ''): string
@@ -62,10 +125,24 @@ final class Http
         return self::basePath() . '/' . ltrim($path, '/');
     }
 
-    /** Absolute URL to the app, preferring the configured base_url. */
+    /**
+     * Absolute URL to the app — used in Slack and email alerts, which are sent
+     * from cron where there is no request to work one out from.
+     *
+     * The setting wins over the installed config so an app that moves can be
+     * corrected from the settings screen.
+     */
     public static function absoluteUrl(string $path = ''): string
     {
-        $configured = rtrim((string) Config::get('base_url', ''), '/');
+        $configured = '';
+        try {
+            $configured = rtrim(trim((string) Settings::get('public_base_url', '')), '/');
+        } catch (\Throwable $e) {
+            // Settings need a database; fall through to the installed config.
+        }
+        if ($configured === '') {
+            $configured = rtrim((string) Config::get('base_url', ''), '/');
+        }
         if ($configured !== '') {
             return $configured . '/' . ltrim($path, '/');
         }

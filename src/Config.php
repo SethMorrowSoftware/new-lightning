@@ -28,7 +28,8 @@ final class Config
         'db_pass'     => '',
         'db_charset'  => 'utf8mb4',
         'app_key'     => '',            // base64:… 32 random bytes, encrypts stored secrets
-        'base_url'    => '',            // e.g. https://storm.example.com — used in Slack links
+        'base_url'    => '',            // e.g. https://example.com/stormwatch — used in Slack links
+        'base_path'   => '',            // override the detected mount point, e.g. "/stormwatch"
         'trusted_proxy' => false,       // honour X-Forwarded-For when behind a proxy/CDN
     ];
 

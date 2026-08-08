@@ -37,7 +37,8 @@ $tabFields = [
     'venue' => ['venue_name', 'venue_address', 'venue_lat', 'venue_lon', 'timezone', 'units',
                 'map_zoom', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds', 'marker_ttl_minutes'],
     'alerts' => ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
-                 'realert_minutes', 'closer_delta_mi', 'notify_watch', 'notify_all_clear', 'notify_errors'],
+                 'cooldown_scope', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
+                 'notify_all_clear', 'notify_errors'],
     'slack' => ['slack_enabled', 'slack_mode', 'slack_bot_token', 'slack_webhook_url', 'slack_channel',
                 'slack_mention', 'slack_extra_mention', 'slack_username', 'slack_icon_emoji'],
     'email' => ['email_enabled', 'email_to', 'email_from', 'email_from_name', 'email_transport',
@@ -46,7 +47,7 @@ $tabFields = [
                  'rest_api_key', 'rest_auth_mode', 'rest_auth_name', 'rest_extra_headers',
                  'rest_poll_seconds', 'rest_map_root', 'rest_map_lat', 'rest_map_lon', 'rest_map_time',
                  'rest_time_format'],
-    'system' => ['retention_hours', 'dashboard_public'],
+    'system' => ['retention_hours', 'dashboard_public', 'public_base_url'],
 ];
 
 $errors = [];
@@ -295,28 +296,56 @@ View::header('settings');
     </div>
 
     <div class="panel">
-      <div class="panel-title">Timing</div>
-      <div class="field">
-        <label for="all_clear_minutes">All clear after (minutes)</label>
-        <input type="number" id="all_clear_minutes" name="all_clear_minutes" min="1" max="240" value="<?= Http::e($value('all_clear_minutes')) ?>" class="<?= $errorClass('all_clear_minutes') ?>">
-        <?= $errorNote('all_clear_minutes') ?>
-        <div class="field-note">
-          How long the alert radius must stay quiet before the all clear is announced.
-          Thirty minutes after the last strike is the widely used guidance.
-        </div>
-      </div>
+      <div class="panel-title">Cooldown</div>
+      <p class="field-note" style="margin-top:0;margin-bottom:16px;">
+        One alert per storm. After lightning enters the alert radius, Storm Watch stays quiet
+        until the cooldown has run out with nothing new, then posts a single all clear so staff
+        know it is safe to go back outside.
+      </p>
+
       <div class="field-grid2">
         <div class="field">
-          <label for="realert_minutes">Repeat while active (minutes)</label>
-          <input type="number" id="realert_minutes" name="realert_minutes" min="0" max="240" value="<?= Http::e($value('realert_minutes')) ?>" class="<?= $errorClass('realert_minutes') ?>">
-          <?= $errorNote('realert_minutes') ?>
-          <div class="field-note">A reminder while a warning is running. Set to 0 for one alert only.</div>
+          <label for="all_clear_minutes">Cooldown — quiet minutes before the all clear</label>
+          <input type="number" id="all_clear_minutes" name="all_clear_minutes" min="1" max="240" value="<?= Http::e($value('all_clear_minutes')) ?>" class="<?= $errorClass('all_clear_minutes') ?>">
+          <?= $errorNote('all_clear_minutes') ?>
+          <div class="field-note">Thirty minutes after the last strike is the widely used guidance.</div>
         </div>
         <div class="field">
-          <label for="closer_delta_mi">Re-alert if closer by (mi)</label>
+          <label for="cooldown_scope">Strikes that keep the cooldown running</label>
+          <select id="cooldown_scope" name="cooldown_scope">
+            <option value="alert"<?= $selected('cooldown_scope', 'alert') ?>>Only inside the alert radius</option>
+            <option value="watch"<?= $selected('cooldown_scope', 'watch') ?>>Inside the watch radius</option>
+            <option value="display"<?= $selected('cooldown_scope', 'display') ?>>Any strike being tracked</option>
+          </select>
+          <div class="field-note">
+            Widen this and a storm circling just outside the alert radius keeps the venue on hold
+            rather than triggering an early all clear.
+          </div>
+        </div>
+      </div>
+
+      <div class="notice" id="cooldownSummary" style="margin-bottom:0;"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Reminders during a storm</div>
+      <p class="field-note" style="margin-top:0;margin-bottom:14px;">
+        Both are off by default, which is what keeps a long storm down to one alert and one
+        all clear. Turn them on only if your staff want to be nudged again while the hold is
+        still in force.
+      </p>
+      <div class="field-grid2">
+        <div class="field">
+          <label for="realert_minutes">Repeat the alert every (minutes)</label>
+          <input type="number" id="realert_minutes" name="realert_minutes" min="0" max="240" value="<?= Http::e($value('realert_minutes')) ?>" class="<?= $errorClass('realert_minutes') ?>">
+          <?= $errorNote('realert_minutes') ?>
+          <div class="field-note">0 = never repeat.</div>
+        </div>
+        <div class="field">
+          <label for="closer_delta_mi">Re-alert if the storm closes in by (mi)</label>
           <input type="number" step="0.5" id="closer_delta_mi" name="closer_delta_mi" min="0" max="100" value="<?= Http::e($value('closer_delta_mi')) ?>" class="<?= $errorClass('closer_delta_mi') ?>">
           <?= $errorNote('closer_delta_mi') ?>
-          <div class="field-note">Sends an update when the storm closes in by this much. 0 disables it.</div>
+          <div class="field-note">0 = never. A safety valve for a storm heading straight at you.</div>
         </div>
       </div>
     </div>
@@ -705,6 +734,18 @@ View::header('settings');
         <label for="retention_hours">Keep strike history for (hours)</label>
         <input type="number" id="retention_hours" name="retention_hours" min="1" max="8760" value="<?= Http::e($value('retention_hours')) ?>" class="<?= $errorClass('retention_hours') ?>">
         <?= $errorNote('retention_hours') ?>
+      </div>
+      <div class="field">
+        <label for="public_base_url">Public address of this dashboard</label>
+        <input type="text" id="public_base_url" name="public_base_url" value="<?= Http::e($value('public_base_url')) ?>"
+               placeholder="<?= Http::e(rtrim(Http::absoluteUrl(''), '/')) ?>" class="<?= $errorClass('public_base_url') ?>">
+        <?= $errorNote('public_base_url') ?>
+        <div class="field-note">
+          Used for the "Open the dashboard" link in Slack and email. Cron has no web request to
+          work this out from, so set it if those links come out wrong — for a subfolder install
+          include the folder, e.g. <code>https://example.com/stormwatch</code>.
+          Leave blank to use what was detected at install time.
+        </div>
       </div>
       <div class="btn-row"><button type="submit" class="btn primary">Save</button></div>
     </form>

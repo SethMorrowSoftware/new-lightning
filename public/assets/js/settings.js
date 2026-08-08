@@ -58,6 +58,67 @@
     syncTransport();
   }
 
+  /* ---- Cooldown: say back, in plain words, what the numbers add up to.
+         Radii and minutes are easy to mis-set, and the cost of getting them
+         wrong is either alert spam or an all clear that comes too early. ---- */
+  var summaryBox = document.getElementById('cooldownSummary');
+  if (summaryBox) {
+    var num = function (id, fallback) {
+      var input = document.getElementById(id);
+      var value = input ? parseFloat(input.value) : NaN;
+      return isNaN(value) ? fallback : value;
+    };
+    var plural = function (n, one, many) { return n === 1 ? one : many; };
+
+    var renderSummary = function () {
+      var alertR = num('alert_radius_mi', 10);
+      var watchR = num('watch_radius_mi', 20);
+      var displayR = num('display_radius_mi', 30);
+      var minutes = num('all_clear_minutes', 30);
+      var scopeEl = document.getElementById('cooldown_scope');
+      var scope = scopeEl ? scopeEl.value : 'alert';
+      var repeat = num('realert_minutes', 0);
+      var closer = num('closer_delta_mi', 0);
+
+      var scopeRadius = scope === 'display' ? displayR : (scope === 'watch' ? watchR : alertR);
+      var scopeText = scope === 'alert'
+        ? 'no further strikes within ' + alertR + ' mi'
+        : (scope === 'watch'
+            ? 'no strikes within ' + watchR + ' mi'
+            : 'no strikes anywhere in the ' + displayR + ' mi tracked area');
+
+      var lines = [
+        '<b>Alert</b> as soon as lightning strikes within <b>' + alertR + ' mi</b> of the venue.',
+        'Then <b>stay silent</b> until there have been <b>' + minutes + ' ' + plural(minutes, 'minute', 'minutes')
+          + '</b> with ' + scopeText + ', and post the <b>all clear</b>.'
+      ];
+
+      if (repeat > 0 || closer > 0) {
+        var extras = [];
+        if (repeat > 0) extras.push('repeat the alert every ' + repeat + ' ' + plural(repeat, 'minute', 'minutes'));
+        if (closer > 0) extras.push('send an update if the storm closes in by ' + closer + ' mi');
+        lines.push('While the hold is running, also ' + extras.join(', and ') + '.');
+      } else {
+        lines.push('That is one alert and one all clear per storm — nothing in between.');
+      }
+
+      if (scopeRadius < alertR) {
+        lines.push('<b>Check these numbers:</b> the cooldown ring is smaller than the alert radius.');
+      }
+
+      summaryBox.innerHTML = lines.join('<br>');
+    };
+
+    ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
+     'cooldown_scope', 'realert_minutes', 'closer_delta_mi'].forEach(function (id) {
+      var input = document.getElementById(id);
+      if (!input) return;
+      input.addEventListener('input', renderSummary);
+      input.addEventListener('change', renderSummary);
+    });
+    renderSummary();
+  }
+
   // ---- connection tests ----
   function renderResult(ok, message, detail) {
     var box = document.getElementById('testResult');
