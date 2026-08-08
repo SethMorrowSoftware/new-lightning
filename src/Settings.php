@@ -36,9 +36,14 @@ final class Settings
             'alert_radius_mi'   => ['type' => 'float', 'default' => 10.0, 'min' => 0.5, 'max' => 200],
             'watch_radius_mi'   => ['type' => 'float', 'default' => 20.0, 'min' => 0.5, 'max' => 300],
             'display_radius_mi' => ['type' => 'float', 'default' => 30.0, 'min' => 1, 'max' => 400],
+            // The cooldown: after an alert, stay silent until this many minutes
+            // have passed with no qualifying strike, then post the all clear.
             'all_clear_minutes' => ['type' => 'int', 'default' => 30, 'min' => 1, 'max' => 240],
-            'realert_minutes'   => ['type' => 'int', 'default' => 15, 'min' => 0, 'max' => 240],
-            'closer_delta_mi'   => ['type' => 'float', 'default' => 3.0, 'min' => 0, 'max' => 100],
+            'cooldown_scope'    => ['type' => 'enum', 'default' => 'alert', 'options' => ['alert', 'watch', 'display']],
+            // Both default to off: repeating during a storm is the spam an
+            // operator asking for a cooldown is trying to avoid.
+            'realert_minutes'   => ['type' => 'int', 'default' => 0, 'min' => 0, 'max' => 240],
+            'closer_delta_mi'   => ['type' => 'float', 'default' => 0.0, 'min' => 0, 'max' => 100],
             'notify_watch'      => ['type' => 'bool', 'default' => false],
             'notify_all_clear'  => ['type' => 'bool', 'default' => true],
             'notify_errors'     => ['type' => 'bool', 'default' => true],
@@ -86,6 +91,10 @@ final class Settings
             // ---- Retention / access ----
             'retention_hours'  => ['type' => 'int', 'default' => 72, 'min' => 1, 'max' => 8760],
             'dashboard_public' => ['type' => 'bool', 'default' => false],
+            // The address alerts should link to. Cron has no request to infer
+            // one from, and an install that later moves needs a way to correct
+            // it without hand-editing config.php.
+            'public_base_url'  => ['type' => 'string', 'default' => '', 'max' => 300],
             'ingest_token'     => ['type' => 'secret', 'default' => ''],
             'kiosk_token'      => ['type' => 'secret', 'default' => ''],
             'cron_token'       => ['type' => 'secret', 'default' => ''],

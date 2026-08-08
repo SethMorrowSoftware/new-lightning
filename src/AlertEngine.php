@@ -119,11 +119,32 @@ final class AlertEngine
         $watchRadius = Settings::getFloat('watch_radius_mi');
         $window = max(60, Settings::getInt('all_clear_minutes') * 60);
 
+        $cooldownRadius = self::cooldownRadius();
+
         $lastInAlert = Strikes::latestWithin($alertRadius, $window);
         $lastInWatch = Strikes::latestWithin($watchRadius, $window);
+        // The cooldown may be measured over a wider ring than the one that
+        // triggers an alert, so a storm circling just outside the alert radius
+        // does not produce a premature all clear.
+        $lastInCooldown = $cooldownRadius > $alertRadius
+            ? Strikes::latestWithin($cooldownRadius, $window)
+            : $lastInAlert;
+
         $nearest = Strikes::nearest($window);
 
+        $previousLevel = (string) $state['level'];
+        $muted = isset($state['muted_until']) && (int) $state['muted_until'] > $now;
+        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
+        $notifiedAt = (int) ($state['notified_at'] ?? 0);
+        $notifiedNearest = $state['notified_nearest_mi'] !== null ? (float) $state['notified_nearest_mi'] : null;
+
+        $wasElevated = $previousLevel === self::LEVEL_WARNING || $notifiedLevel === self::LEVEL_WARNING;
+
         if ($lastInAlert !== null) {
+            $level = self::LEVEL_WARNING;
+        } elseif ($wasElevated && $lastInCooldown !== null) {
+            // Nothing inside the alert radius any more, but the cooldown has
+            // not run out: stay in warning rather than sound the all clear.
             $level = self::LEVEL_WARNING;
         } elseif ($lastInWatch !== null) {
             $level = self::LEVEL_WATCH;
@@ -131,9 +152,7 @@ final class AlertEngine
             $level = self::LEVEL_CLEAR;
         }
 
-        $previousLevel = (string) $state['level'];
         $nearestMi = $nearest !== null ? (float) $nearest['distance_mi'] : null;
-        $nearestBearing = $nearest !== null ? (float) $nearest['bearing_deg'] : null;
         $nearestAt = $nearest !== null ? (int) $nearest['struck_at'] : null;
 
         $changes = [
@@ -145,24 +164,31 @@ final class AlertEngine
             $changes['since'] = $now;
         }
 
-        $muted = isset($state['muted_until']) && (int) $state['muted_until'] > $now;
-        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
-        $notifiedAt = (int) ($state['notified_at'] ?? 0);
-        $notifiedNearest = $state['notified_nearest_mi'] !== null ? (float) $state['notified_nearest_mi'] : null;
-
         $alert = null;
 
         if ($level === self::LEVEL_WARNING && $notifiedLevel !== self::LEVEL_WARNING) {
             $alert = self::buildWarning($lastInAlert, $nearest, $alertRadius, $window);
+        } elseif ($notifiedLevel === self::LEVEL_WARNING && $level !== self::LEVEL_WARNING) {
+            // The cooldown has run out. Say so even when a storm is still being
+            // tracked further out: staff were told to go indoors and are owed
+            // the word that they can come back out.
+            $alert = Settings::getBool('notify_all_clear')
+                ? self::buildAllClear($window, $level, $nearest)
+                : null;
+            $changes['notified_level'] = self::LEVEL_CLEAR;
+            $changes['notified_nearest_mi'] = null;
+            if ($alert === null) {
+                $changes['notified_at'] = $now;
+            }
         } elseif ($level === self::LEVEL_WATCH
             && $notifiedLevel === self::LEVEL_CLEAR
             && Settings::getBool('notify_watch')) {
             $alert = self::buildWatch($lastInWatch, $nearest, $watchRadius, $window);
         } elseif ($level === self::LEVEL_CLEAR && $notifiedLevel !== self::LEVEL_CLEAR) {
+            // A watch that was announced has now faded out entirely.
             $alert = Settings::getBool('notify_all_clear')
-                ? self::buildAllClear($window)
+                ? self::buildAllClear($window, $level, $nearest)
                 : null;
-            // Reset the notified level either way, so the next storm alerts.
             $changes['notified_level'] = self::LEVEL_CLEAR;
             $changes['notified_nearest_mi'] = null;
             if ($alert === null) {
@@ -238,18 +264,36 @@ final class AlertEngine
         return $alert;
     }
 
-    private static function buildAllClear(int $window): Alert
+    /** @param array<string,mixed>|null $nearest */
+    private static function buildAllClear(int $window, string $level, ?array $nearest = null): Alert
     {
         $units = Settings::getString('units');
         $minutes = Settings::getInt('all_clear_minutes');
+        $cooldownRadius = self::cooldownRadius();
+
+        $summary = sprintf(
+            'No lightning inside the %s for %d minutes. Normal operations can resume.',
+            $cooldownRadius > Settings::getFloat('alert_radius_mi')
+                ? Geo::formatDistance($cooldownRadius, $units) . ' cooldown radius'
+                : Geo::formatDistance($cooldownRadius, $units) . ' alert radius',
+            $minutes
+        );
+
+        // Being told "all clear" while a storm is plainly still on the map
+        // reads as a malfunction unless it is spelled out.
+        if ($level === self::LEVEL_WATCH) {
+            $summary .= sprintf(
+                ' A storm is still being tracked further out%s — keep an eye on it.',
+                $nearest !== null
+                    ? ', nearest ' . Geo::formatDistance((float) $nearest['distance_mi'], $units)
+                    : ''
+            );
+        }
+
         $alert = new Alert(
             Alert::KIND_ALL_CLEAR,
             sprintf('All clear at %s', Settings::getString('venue_name')),
-            sprintf(
-                'No lightning inside the %s alert radius for %d minutes. Normal operations can resume.',
-                Geo::formatDistance(Settings::getFloat('alert_radius_mi'), $units),
-                $minutes
-            )
+            $summary
         );
         $alert->strikeCount = Strikes::countWithin(Settings::getFloat('display_radius_mi'), $window);
         return $alert;
@@ -354,6 +398,27 @@ final class AlertEngine
         Events::log('alert.unmuted', Events::SEVERITY_INFO, 'Alerts un-muted.', []);
     }
 
+    /**
+     * The ring the cooldown timer watches.
+     *
+     * "Do not alert again until Y minutes with no strikes" begs the question
+     * of which strikes count. By default only those inside the alert radius do
+     * — the usual lightning-safety reading — but an operator can widen it so
+     * any tracked strike keeps the venue on hold.
+     */
+    public static function cooldownRadius(): float
+    {
+        switch (Settings::getString('cooldown_scope')) {
+            case 'watch':
+                return Settings::getFloat('watch_radius_mi');
+            case 'display':
+                return Settings::getFloat('display_radius_mi');
+            case 'alert':
+            default:
+                return Settings::getFloat('alert_radius_mi');
+        }
+    }
+
     /** @return array<string,mixed> */
     public static function state(): array
     {
@@ -377,9 +442,10 @@ final class AlertEngine
     {
         $state = self::state();
         $now = time();
-        $alertRadius = Settings::getFloat('alert_radius_mi');
         $window = max(60, Settings::getInt('all_clear_minutes') * 60);
-        $lastInAlert = Strikes::latestWithin($alertRadius, $window);
+        // Count down from the last strike the cooldown actually watches, so
+        // the "all clear in" figure on the dashboard matches what will happen.
+        $lastQualifying = Strikes::latestWithin(self::cooldownRadius(), $window);
 
         return [
             'level' => (string) $state['level'],
@@ -389,7 +455,7 @@ final class AlertEngine
             'muted_until' => isset($state['muted_until']) && (int) $state['muted_until'] > $now
                 ? (int) $state['muted_until']
                 : null,
-            'all_clear_at' => $lastInAlert !== null ? ((int) $lastInAlert['struck_at'] + $window) : null,
+            'all_clear_at' => $lastQualifying !== null ? ((int) $lastQualifying['struck_at'] + $window) : null,
         ];
     }
 

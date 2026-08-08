@@ -22,6 +22,9 @@ $provider = Settings::getString('provider');
 $boot = [
     'stateUrl' => Http::url('api/state.php'),
     'actionUrl' => Http::url('api/action.php'),
+    'loginUrl' => Http::url('login.php'),
+    // Scoped so a second install on the same domain keeps its own preferences.
+    'storagePrefix' => Http::storagePrefix(),
     'csrf' => $canAct ? Http::csrfToken() : '',
     'canAct' => $canAct,
     'venue' => [
