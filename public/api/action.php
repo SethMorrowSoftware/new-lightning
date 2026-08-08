@@ -25,6 +25,12 @@ use StormWatch\Strikes;
 
 App::boot('auth', true);
 
+// The connection tests deliberately talk to a slow remote service. Give them
+// room, but keep a hard ceiling so a wedged socket cannot tie up a worker —
+// and keep going if the operator navigates away mid-test.
+@set_time_limit(60);
+ignore_user_abort(true);
+
 if (!Http::isPost()) {
     Http::jsonError('This endpoint expects a POST request.', 405);
 }

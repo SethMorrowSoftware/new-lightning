@@ -324,13 +324,15 @@ final class Client
                 throw new \RuntimeException('Reading from the WebSocket failed.');
             }
             if ($chunk === '') {
-                $meta = stream_get_meta_data($this->stream);
-                if (!empty($meta['timed_out'])) {
-                    continue;
-                }
                 if (feof($this->stream)) {
                     throw new \RuntimeException('The WebSocket connection dropped.');
                 }
+                // An encrypted stream can report itself readable and then hand
+                // back nothing, because the bytes were consumed by the TLS
+                // layer. Without a pause this becomes a hot loop that burns a
+                // core until the deadline — which on shared hosting is what
+                // gets the process killed and the request left hanging.
+                usleep(2000);
                 continue;
             }
             $buffer .= $chunk;

@@ -38,14 +38,17 @@ $tabFields = [
                 'map_zoom', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds', 'marker_ttl_minutes'],
     'alerts' => ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
                  'cooldown_scope', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
-                 'notify_all_clear', 'notify_errors'],
+                 'notify_all_clear', 'notify_errors', 'monitor_schedule_enabled',
+                 'monitor_lead_minutes', 'monitor_trail_minutes'],
     'slack' => ['slack_enabled', 'slack_mode', 'slack_bot_token', 'slack_webhook_url', 'slack_channel',
                 'slack_mention', 'slack_extra_mention', 'slack_username', 'slack_icon_emoji'],
     'email' => ['email_enabled', 'email_to', 'email_from', 'email_from_name', 'email_transport',
                 'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass'],
     'source' => ['provider', 'worker_seconds', 'blitz_servers', 'blitz_init_json', 'rest_endpoint',
-                 'rest_api_key', 'rest_auth_mode', 'rest_auth_name', 'rest_extra_headers',
-                 'rest_poll_seconds', 'rest_map_root', 'rest_map_lat', 'rest_map_lon', 'rest_map_time',
+                 'rest_api_key', 'rest_api_secret', 'rest_auth_mode', 'rest_auth_name',
+                 'rest_auth_secret_name', 'rest_extra_headers', 'rest_poll_seconds',
+                 'rest_active_poll_seconds', 'rest_max_age_minutes', 'api_monthly_budget',
+                 'rest_map_root', 'rest_map_lat', 'rest_map_lon', 'rest_map_time',
                  'rest_time_format'],
     'system' => ['retention_hours', 'dashboard_public', 'public_base_url'],
 ];
@@ -82,6 +85,11 @@ if (Http::isPost()) {
             $posted = $input;
             $errors = Settings::put($input);
             if ($errors === []) {
+                // The weekly schedule is a grid rather than a flat setting, so
+                // it is validated and stored by its own class.
+                if ($tab === 'alerts' && isset($_POST['sched']) && is_array($_POST['sched'])) {
+                    \StormWatch\Schedule::save($_POST['sched']);
+                }
                 Settings::ensureTokens();
                 Events::log('settings.saved', Events::SEVERITY_INFO, sprintf('Settings saved (%s tab).', $tab), [
                     'by' => $user['username'],
@@ -351,6 +359,72 @@ View::header('settings');
     </div>
 
     <div class="panel">
+      <div class="panel-title">Operating hours</div>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Only monitor while the venue is open</div>
+          <div class="sub">
+            Off means round-the-clock monitoring. On, lightning is tracked only during the hours below —
+            which is the single biggest saving on a metered weather API, and stops alerts firing at 3am
+            when nobody is on site.
+          </div>
+        </div>
+        <label class="switch"><input type="checkbox" name="monitor_schedule_enabled" id="monitor_schedule_enabled"<?= $checked('monitor_schedule_enabled') ?>><span class="slider"></span></label>
+      </div>
+
+      <div id="scheduleFields">
+        <div class="table-scroll">
+          <table class="table">
+            <thead><tr><th>Day</th><th>Open</th><th>Close</th><th style="text-align:right;">Closed</th></tr></thead>
+            <tbody>
+            <?php foreach (\StormWatch\Schedule::all() as $dayKey => $entry): ?>
+              <tr>
+                <td><strong><?= Http::e(\StormWatch\Schedule::DAY_NAMES[$dayKey]) ?></strong></td>
+                <td><input type="time" name="sched[<?= Http::e($dayKey) ?>][open]" value="<?= Http::e($entry['open']) ?>" style="width:auto;background:var(--bg-1);border:1px solid var(--border);color:var(--text-hi);border-radius:8px;padding:6px 9px;font-size:13px;"></td>
+                <td><input type="time" name="sched[<?= Http::e($dayKey) ?>][close]" value="<?= Http::e($entry['close']) ?>" style="width:auto;background:var(--bg-1);border:1px solid var(--border);color:var(--text-hi);border-radius:8px;padding:6px 9px;font-size:13px;"></td>
+                <td style="text-align:right;">
+                  <label class="switch"><input type="checkbox" name="sched[<?= Http::e($dayKey) ?>][closed]"<?= $entry['closed'] ? ' checked' : '' ?>><span class="slider"></span></label>
+                </td>
+              </tr>
+            <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+        <div class="field-note" style="margin-top:10px;">
+          Times are in the venue's time zone (<?= Http::e(Settings::getString('timezone')) ?>), so they keep
+          meaning the same thing across a daylight-saving change. A closing time earlier than the opening
+          time is treated as after midnight.
+        </div>
+
+        <div class="field-grid2" style="margin-top:16px;">
+          <div class="field">
+            <label for="monitor_lead_minutes">Start monitoring before opening (minutes)</label>
+            <input type="number" id="monitor_lead_minutes" name="monitor_lead_minutes" min="0" max="480" value="<?= Http::e($value('monitor_lead_minutes')) ?>" class="<?= $errorClass('monitor_lead_minutes') ?>">
+            <?= $errorNote('monitor_lead_minutes') ?>
+            <div class="field-note">Staff arrive before the doors open.</div>
+          </div>
+          <div class="field">
+            <label for="monitor_trail_minutes">Keep monitoring after closing (minutes)</label>
+            <input type="number" id="monitor_trail_minutes" name="monitor_trail_minutes" min="0" max="480" value="<?= Http::e($value('monitor_trail_minutes')) ?>" class="<?= $errorClass('monitor_trail_minutes') ?>">
+            <?= $errorNote('monitor_trail_minutes') ?>
+            <div class="field-note">Clear-down and car park traffic.</div>
+          </div>
+        </div>
+
+        <div class="notice" style="margin-bottom:0;">
+          <b>Currently:</b> <?= Http::e(\StormWatch\Schedule::describe()) ?><br>
+          That is <b><?= number_format(\StormWatch\Schedule::hoursPerWeek(), 1) ?> hours a week</b>
+          out of 168 —
+          <b><?= number_format(100 * \StormWatch\Schedule::hoursPerWeek() / 168) ?>%</b> of the polling
+          a round-the-clock setup would do.
+          <?php if (!Settings::getBool('monitor_schedule_enabled')): ?>
+            <br><em>Not in force — the switch above is off.</em>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
       <div class="panel-title">What gets announced</div>
       <div class="toggle-row">
         <div>
@@ -611,6 +685,23 @@ View::header('settings');
     </div>
 
     <div class="panel" data-provider="rest">
+      <div class="panel-title">Quick setup</div>
+      <div class="field">
+        <label for="restPreset">Fill in the settings for a known provider</label>
+        <select id="restPreset">
+          <option value="">Choose a provider…</option>
+          <option value="xweather">Xweather — lightning, filter=all</option>
+          <option value="xweather_within">Xweather — lightning within a radius</option>
+        </select>
+        <div class="field-note">
+          This only fills the fields in below; nothing is saved until you press Save. Your own
+          credentials are never touched.
+        </div>
+      </div>
+      <div class="notice" id="presetNote" style="display:none;margin-bottom:0;"></div>
+    </div>
+
+    <div class="panel" data-provider="rest">
       <div class="panel-title">REST endpoint</div>
       <div class="field">
         <label for="rest_endpoint">Endpoint URL</label>
@@ -621,42 +712,104 @@ View::header('settings');
           <code>{radius_km}</code> <code>{now}</code> <code>{now_iso}</code> <code>{since}</code> <code>{since_iso}</code>.
         </div>
       </div>
-      <div class="field-grid2">
+      <div class="field-grid3">
         <div class="field">
-          <label for="rest_auth_mode">Send the key as</label>
+          <label for="rest_auth_mode">Send credentials as</label>
           <select id="rest_auth_mode" name="rest_auth_mode">
             <option value="query"<?= $selected('rest_auth_mode', 'query') ?>>Query parameter</option>
+            <option value="client_pair"<?= $selected('rest_auth_mode', 'client_pair') ?>>ID + secret pair (Xweather)</option>
             <option value="header"<?= $selected('rest_auth_mode', 'header') ?>>Request header</option>
             <option value="bearer"<?= $selected('rest_auth_mode', 'bearer') ?>>Authorization: Bearer</option>
             <option value="none"<?= $selected('rest_auth_mode', 'none') ?>>No key</option>
           </select>
         </div>
         <div class="field">
-          <label for="rest_auth_name">Parameter / header name</label>
+          <label for="rest_auth_name">Name of the first parameter</label>
           <input type="text" id="rest_auth_name" name="rest_auth_name" value="<?= Http::e($value('rest_auth_name')) ?>" placeholder="apikey">
         </div>
+        <div class="field" id="secretNameField">
+          <label for="rest_auth_secret_name">Name of the second</label>
+          <input type="text" id="rest_auth_secret_name" name="rest_auth_secret_name" value="<?= Http::e($value('rest_auth_secret_name')) ?>" placeholder="client_secret">
+        </div>
       </div>
-      <div class="field">
-        <label for="rest_api_key">API key</label>
-        <input type="password" id="rest_api_key" name="rest_api_key" autocomplete="off"
-               placeholder="<?= $secretSet('rest_api_key') ? 'Saved — leave blank to keep it' : '' ?>">
-        <?php if ($secretSet('rest_api_key')): ?>
-          <div class="field-note"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;">
-            <input type="checkbox" name="clear_rest_api_key" style="width:auto;"> Remove the stored key
-          </label></div>
-        <?php endif; ?>
+      <div class="field-grid2">
+        <div class="field">
+          <label for="rest_api_key" id="restKeyLabel">API key</label>
+          <input type="password" id="rest_api_key" name="rest_api_key" autocomplete="off"
+                 placeholder="<?= $secretSet('rest_api_key') ? 'Saved — leave blank to keep it' : '' ?>">
+          <?php if ($secretSet('rest_api_key')): ?>
+            <div class="field-note"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;">
+              <input type="checkbox" name="clear_rest_api_key" style="width:auto;"> Remove the stored key
+            </label></div>
+          <?php endif; ?>
+        </div>
+        <div class="field" id="restSecretField">
+          <label for="rest_api_secret">Client secret</label>
+          <input type="password" id="rest_api_secret" name="rest_api_secret" autocomplete="off"
+                 placeholder="<?= $secretSet('rest_api_secret') ? 'Saved — leave blank to keep it' : '' ?>">
+          <?php if ($secretSet('rest_api_secret')): ?>
+            <div class="field-note"><label style="display:inline-flex;gap:6px;align-items:center;cursor:pointer;">
+              <input type="checkbox" name="clear_rest_api_secret" style="width:auto;"> Remove the stored secret
+            </label></div>
+          <?php endif; ?>
+        </div>
       </div>
       <div class="field">
         <label for="rest_extra_headers">Extra headers</label>
         <textarea id="rest_extra_headers" name="rest_extra_headers" placeholder="X-Client: stormwatch"><?= Http::e($value('rest_extra_headers')) ?></textarea>
         <div class="field-note">One <code>Name: value</code> per line.</div>
       </div>
-      <div class="field">
-        <label for="rest_poll_seconds">Poll every (seconds)</label>
-        <input type="number" id="rest_poll_seconds" name="rest_poll_seconds" min="15" max="3600" value="<?= Http::e($value('rest_poll_seconds')) ?>" class="<?= $errorClass('rest_poll_seconds') ?>">
-        <?= $errorNote('rest_poll_seconds') ?>
-        <div class="field-note">Rounded up to the cron interval — a once-a-minute cron cannot poll faster than that.</div>
+      <div class="field-grid3">
+        <div class="field">
+          <label for="rest_poll_seconds">Poll every (seconds, quiet)</label>
+          <input type="number" id="rest_poll_seconds" name="rest_poll_seconds" min="15" max="3600" value="<?= Http::e($value('rest_poll_seconds')) ?>" class="<?= $errorClass('rest_poll_seconds') ?>">
+          <?= $errorNote('rest_poll_seconds') ?>
+          <div class="field-note">When nothing is happening.</div>
+        </div>
+        <div class="field">
+          <label for="rest_active_poll_seconds">Poll every (seconds, storm)</label>
+          <input type="number" id="rest_active_poll_seconds" name="rest_active_poll_seconds" min="15" max="3600" value="<?= Http::e($value('rest_active_poll_seconds')) ?>" class="<?= $errorClass('rest_active_poll_seconds') ?>">
+          <?= $errorNote('rest_active_poll_seconds') ?>
+          <div class="field-note">While a watch or alert is running.</div>
+        </div>
+        <div class="field">
+          <label for="rest_max_age_minutes">Ignore strikes older than (min)</label>
+          <input type="number" id="rest_max_age_minutes" name="rest_max_age_minutes" min="1" max="1440" value="<?= Http::e($value('rest_max_age_minutes')) ?>" class="<?= $errorClass('rest_max_age_minutes') ?>">
+          <?= $errorNote('rest_max_age_minutes') ?>
+          <div class="field-note">Stops history raising a live alert.</div>
+        </div>
       </div>
+      <div class="field-note" style="margin-top:-6px;">
+        Neither can be faster than your cron interval — a once-a-minute cron cannot poll every 30 seconds.
+        Polling slowly when the sky is clear and quickly during a storm is what makes a metered plan
+        affordable without being slow to notice the first strike.
+      </div>
+
+      <div class="panel-title" style="margin-top:22px;">Plan allowance</div>
+      <?php $meter = \StormWatch\ApiBudget::summary(\StormWatch\Providers\Rest::METER); ?>
+      <div class="field">
+        <label for="api_monthly_budget">Accesses included per month</label>
+        <input type="number" id="api_monthly_budget" name="api_monthly_budget" min="0" max="100000000" value="<?= Http::e($value('api_monthly_budget')) ?>" class="<?= $errorClass('api_monthly_budget') ?>">
+        <?= $errorNote('api_monthly_budget') ?>
+        <div class="field-note">
+          The Xweather free tier is <b>15,000 a month</b>. 0 means unmetered. Polling pauses when the
+          allowance runs out, and you get a failure alert — it never stops quietly.
+        </div>
+      </div>
+      <div class="notice" id="budgetSummary">
+        <b>This month (<?= Http::e($meter['period']) ?>):</b>
+        <?= number_format($meter['tokens']) ?> access<?= $meter['tokens'] === 1 ? '' : 'es' ?>
+        used across <?= number_format($meter['requests']) ?> request<?= $meter['requests'] === 1 ? '' : 's' ?><?php
+        if ($meter['budget'] > 0): ?>, <?= number_format((int) $meter['remaining']) ?> remaining<?php
+        endif; ?>.
+        <?php if ($meter['projected_month'] > 0): ?>
+          <br>At this rate the month would finish around <b><?= number_format($meter['projected_month']) ?></b>.
+          <?php if ($meter['over_projection']): ?>
+            <span style="color:var(--danger);">That is over the allowance — slow the quiet poll down, or restrict the operating hours.</span>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+      <div class="notice" id="costProjection"></div>
 
       <div class="panel-title" style="margin-top:22px;">Response mapping</div>
       <div class="field-note" style="margin-bottom:10px;">
@@ -843,5 +996,9 @@ View::header('settings');
 View::bootData('sw-settings', [
     'actionUrl' => Http::url('api/action.php'),
     'csrf' => Http::csrfToken(),
+    // Hours a week the schedule covers, so the cost projection reflects the
+    // venue's real operating pattern rather than a round-the-clock guess.
+    'monitoredHoursPerWeek' => round(\StormWatch\Schedule::hoursPerWeek(), 2),
+    'scheduleEnabled' => Settings::getBool('monitor_schedule_enabled'),
 ]);
 View::end(['js/settings.js'], View::footerText());

@@ -401,6 +401,28 @@
     var badgeText = el('modeBadgeText');
     var healthy = source.source_healthy && source.cron_healthy;
 
+    // Outside operating hours nothing is being fetched, so saying "all clear"
+    // would be a reassurance nobody checked. Say what is actually true.
+    if (source.monitoring === false) {
+      badge.className = 'mode-badge';
+      badgeText.textContent = 'Monitoring paused';
+      el('sourceDot').className = 'status-dot warn';
+      el('sourceText').textContent = 'Outside operating hours — lightning is not being tracked'
+        + (source.next_start_text ? '. Resumes ' + source.next_start_text + '.' : '.');
+      el('cronDot').className = 'status-dot ' + (source.cron_healthy ? 'ok' : 'err');
+      el('cronText').textContent = source.schedule_summary || '';
+      el('providerLabel').textContent = PROVIDER_LABELS[source.provider] || source.provider;
+      el('providerSub').textContent = 'Paused until the venue reopens.';
+      var channelsPaused = [];
+      if (source.slack_ready) channelsPaused.push('Slack');
+      if (source.email_ready) channelsPaused.push('Email');
+      el('notifyDot').className = 'status-dot ' + (channelsPaused.length ? 'ok' : 'warn');
+      el('notifyText').textContent = channelsPaused.length
+        ? 'Server alerts go to ' + channelsPaused.join(' and ') + ' once monitoring resumes.'
+        : 'No server alert channel is switched on.';
+      return;
+    }
+
     badge.className = 'mode-badge ' + (healthy ? 'live-ok' : (source.cron_healthy ? '' : 'live-err'));
     badgeText.textContent = healthy
       ? 'Live — ' + source.provider

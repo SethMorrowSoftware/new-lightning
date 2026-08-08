@@ -102,6 +102,23 @@ final class Migrations
                 )$suffix");
                 self::index($db, 'idx_login_attempts_ip', 'login_attempts (ip, attempted_at)');
             }],
+
+            [2, 'metered API usage', static function (Database $db): void {
+                $sqlite = $db->driver() === 'sqlite';
+                $int = $sqlite ? 'INTEGER' : 'BIGINT';
+                $suffix = $sqlite ? '' : ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
+
+                // One row per provider per billing period, so a paid plan's
+                // quota can be tracked without touching the strike tables.
+                $db->run("CREATE TABLE IF NOT EXISTS api_usage (
+                    provider VARCHAR(32) NOT NULL,
+                    period VARCHAR(16) NOT NULL,
+                    requests $int NOT NULL DEFAULT 0,
+                    tokens $int NOT NULL DEFAULT 0,
+                    updated_at $int NOT NULL DEFAULT 0,
+                    PRIMARY KEY (provider, period)
+                )$suffix");
+            }],
         ];
     }
 
