@@ -439,6 +439,8 @@ into external monitoring.
 | Symptom | Cause and fix |
 |---|---|
 | "Scheduled task not running" on the dashboard | The cron jobs are missing or the PHP path is wrong. Run `php bin/tick.php -v` by hand to see the real error. |
+| The dashboard sits on "Loading…" | It should not any more: the page now gives up after twenty seconds and puts the reason where the feed health normally goes — the HTTP status and, when the server sends an error page rather than JSON, the first line of it. Whatever it says there is the fault. |
+| "Dashboard not updating" | The page cannot read `api/state.php`. The message beside it is the server's own, so start there. It says nothing about whether Slack and email alerts are working: those are sent by the cron job and do not go through this page. |
 | Slack test says `not_in_channel` | Invite the bot: `/invite @YourBot` in that channel. |
 | Slack test says `channel_not_found` | Use the channel ID rather than the name. |
 | Slack test says `missing_scope` | Add `chat:write` under OAuth & Permissions, then reinstall the app. |
