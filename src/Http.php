@@ -73,11 +73,20 @@ final class Http
             return self::$basePath = ($trimmed === '' ? '' : '/' . $trimmed);
         }
 
+        // With no request being served there is no mount point, and on the
+        // command line SCRIPT_NAME is a filesystem path that would turn every
+        // generated URL into nonsense. Cron links come from base_url instead.
+        if (PHP_SAPI === 'cli' && empty($_SERVER['REQUEST_URI'])) {
+            return self::$basePath = '';
+        }
+
         $script = (string) ($_SERVER['SCRIPT_NAME'] ?? '');
         $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
 
         // API endpoints live one level deeper; normalise back to the app root.
-        if (substr($dir, -4) === '/api') {
+        // Check the file really is in the app's api directory, so an app
+        // mounted at a folder called "api" is not silently relocated.
+        if (substr($dir, -4) === '/api' && self::scriptIsInApiDirectory()) {
             $dir = substr($dir, 0, -4);
         }
 
@@ -100,6 +109,38 @@ final class Http
     public static function resetBasePath(): void
     {
         self::$basePath = null;
+    }
+
+    /** Is the running script really public/api/…, or just a folder named "api"? */
+    private static function scriptIsInApiDirectory(): bool
+    {
+        $file = (string) ($_SERVER['SCRIPT_FILENAME'] ?? '');
+        if ($file === '') {
+            // Nothing to check against; the common case is a real API call.
+            return true;
+        }
+        $expected = realpath(SW_ROOT . '/public/api');
+        $actual = realpath(dirname($file));
+        return $expected === false || $actual === false || $actual === $expected;
+    }
+
+    /**
+     * The current request path with the mount point removed, so it can be
+     * handed back to url() later without the mount being applied twice.
+     */
+    public static function relativeUri(): string
+    {
+        $uri = (string) ($_SERVER['REQUEST_URI'] ?? '');
+        if ($uri === '') {
+            return '';
+        }
+        $base = self::basePath();
+        if ($base !== '' && strpos($uri, $base . '/') === 0) {
+            $uri = substr($uri, strlen($base));
+        } elseif ($base !== '' && $uri === $base) {
+            $uri = '/';
+        }
+        return $uri === '' ? '/' : $uri;
     }
 
     /** Session cookie name, scoped to this mount point. */

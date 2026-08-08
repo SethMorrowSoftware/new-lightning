@@ -297,6 +297,28 @@ php "${ROOT}/bin/stormwatch.php" set public_base_url "" >/dev/null 2>&1
 code=$(curl -s -o /dev/null -w '%{http_code}' "${SUBBASE}/public/settings.php")
 status_is 301 "$code" "a direct hit on /public is redirected to the clean URL"
 
+# Deep link while signed out: the stored "next" must not end up with the mount
+# applied twice (/stormwatch/stormwatch/settings.php).
+DEEPJAR="${WORK}/deep.txt"
+NEXT=$(curl -s -o /dev/null -w '%{redirect_url}' -c "$DEEPJAR" -b "$DEEPJAR" "${SUBBASE}/history.php")
+case "$NEXT" in
+  *"${MOUNT}${MOUNT}"*) red "the sign-in redirect does not double the mount path (got ${NEXT})" ;;
+  *"login.php?next="*)  green "the sign-in redirect does not double the mount path" ;;
+  *)                    red "signing out of a deep link should send you to login (got ${NEXT:-nothing})" ;;
+esac
+
+curl -s -o "${WORK}/deep-login.html" -c "$DEEPJAR" -b "$DEEPJAR" -L "${SUBBASE}/history.php"
+DEEPCSRF=$(grep -o 'name="csrf_token" value="[^"]*"' "${WORK}/deep-login.html" | head -1 | sed 's/.*value="//;s/"//')
+DEEPNEXT=$(grep -o 'name="next" value="[^"]*"' "${WORK}/deep-login.html" | head -1 | sed 's/.*value="//;s/"//')
+LANDED=$(curl -s -o /dev/null -w '%{redirect_url}' -c "$DEEPJAR" -b "$DEEPJAR" \
+  -d "csrf_token=${DEEPCSRF}" -d "next=${DEEPNEXT}" \
+  -d "username=smoketest" -d "password=a-good-test-passphrase" "${SUBBASE}/login.php")
+if [ "$LANDED" = "http://127.0.0.1:${SUBPORT}${MOUNT}/history.php" ]; then
+  green "signing in from a deep link lands on the page that was asked for"
+else
+  red "signing in from a deep link lands on the right page (got ${LANDED:-nothing})"
+fi
+
 for path in "src/Http.php" "config/config.php" "data/stormwatch.sqlite" "bin/tick.php"; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "${SUBBASE}/${path}")
   status_is 403 "$code" "${path} is not reachable through the mount"

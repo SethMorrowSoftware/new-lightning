@@ -12,9 +12,17 @@
 # or subdomain in cPanel), that is the tidier arrangement and this file is
 # never consulted.
 
-DirectoryIndex public/index.php index.php
+DirectoryIndex index.php
 
 Options -Indexes
+
+# Everything below depends on mod_rewrite. Without it a bare 404 looks like a
+# botched upload, so say what is actually wrong. (Listing public/index.php in
+# DirectoryIndex would instead serve the dashboard and 404 every other page —
+# a half-working site is harder to diagnose than one that fails plainly.)
+<IfModule !mod_rewrite.c>
+  ErrorDocument 404 "Storm Watch needs Apache's mod_rewrite to run from a subfolder. Ask your host to enable it, or point a document root at this folder's public/ directory instead."
+</IfModule>
 
 <IfModule mod_rewrite.c>
   RewriteEngine On
@@ -39,7 +47,7 @@ Options -Indexes
 
 # Second line of defence for hosts without mod_rewrite: never hand out the
 # database, logs or lock files even if someone reaches them directly.
-<FilesMatch "\.(sqlite|sqlite-wal|sqlite-shm|db|log|lock|ini)$">
+<FilesMatch "\.(sqlite|sqlite3|sqlite-wal|sqlite-shm|sqlite-journal|journal|db|log|lock|ini)$">
   <IfModule mod_authz_core.c>
     Require all denied
   </IfModule>

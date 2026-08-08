@@ -296,8 +296,10 @@ Add a second schedule with `&job=worker` if you are using the Blitzortung feed.
 - All state-changing requests require a CSRF token.
 - The Slack token and SMTP password are encrypted at rest with the
   installation's app key, and the API never returns them.
-- `config/`, `data/`, `src/` and `bin/` are blocked by `.htaccess`, and in the
-  recommended layout they are outside the web root entirely.
+- `config/`, `data/`, `src/`, `bin/` and `tests/` each carry their own deny-all
+  `.htaccess` that does not depend on `mod_rewrite`, on top of the block in the
+  root `.htaccess`. The app rewrites any of them that goes missing. In the
+  document-root layout they are outside the web root entirely.
 - Every page sends `X-Frame-Options`, `X-Content-Type-Options`,
   `Referrer-Policy` and `noindex`.
 
@@ -342,6 +344,7 @@ into external monitoring.
 | The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |
 | Setup wizard says a folder is not writable | Set `config/` and `data/` to `0755` in File Manager. |
 | Sign-in keeps saying "session expired" | The app has mis-detected where it is mounted. Set `base_path` in `config/config.php` to the folder, e.g. `'/stormwatch'`. |
+| "Storm Watch needs Apache's mod_rewrite" | Exactly what it says. Ask your host to enable it, or point a document root at `public/` instead. |
 | Links in Slack or email point at the wrong address | Set **Public address of this dashboard** on the System settings tab, including the subfolder. |
 | URLs show `/public/` in them | An old bookmark. It redirects to the clean URL on its own; nothing to fix. |
 

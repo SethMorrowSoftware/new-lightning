@@ -102,8 +102,8 @@
         lines.push('That is one alert and one all clear per storm — nothing in between.');
       }
 
-      if (scopeRadius < alertR) {
-        lines.push('<b>Check these numbers:</b> the cooldown ring is smaller than the alert radius.');
+      if (scope !== 'alert' && scopeRadius <= alertR) {
+        lines.push('<b>Note:</b> this cooldown scope has no effect — its ring is not larger than the alert radius.');
       }
 
       summaryBox.innerHTML = lines.join('<br>');
