@@ -100,6 +100,14 @@ switch ($action) {
         );
         Http::json(['ok' => $result['ok'], 'message' => $result['message']]);
 
+    case 'probe_mapping':
+        if (Settings::getString('provider') !== 'rest') {
+            Http::jsonError('The mapping check only applies to the REST provider.', 400);
+        }
+        $result = Rest::probeMapping();
+        Events::log('source.probe', $result['ok'] ? 'info' : 'warn', $result['message']);
+        Http::json(['ok' => $result['ok'], 'message' => $result['message'], 'detail' => $result['detail']]);
+
     case 'test_source':
         $provider = Settings::getString('provider');
         if ($provider === 'blitzortung') {

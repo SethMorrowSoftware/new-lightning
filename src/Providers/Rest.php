@@ -84,7 +84,7 @@ final class Rest
      *
      * @return array{ok:bool,records:array<int,array{lat:float,lon:float,ts:int}>,message:string,http_status:int,sample:mixed}
      */
-    public static function fetch(): array
+    public static function fetch(?float $atLat = null, ?float $atLon = null): array
     {
         $endpoint = trim(Settings::getString('rest_endpoint'));
         if ($endpoint === '') {
@@ -115,7 +115,7 @@ final class Rest
         $authName = trim(Settings::getString('rest_auth_name')) ?: 'apikey';
         $secretName = trim(Settings::getString('rest_auth_secret_name')) ?: 'client_secret';
 
-        $url = self::substitute($endpoint);
+        $url = self::substitute($endpoint, $atLat, $atLon);
         $headers = self::extraHeaders();
 
         if ($authMode === 'client_pair') {
@@ -270,29 +270,157 @@ final class Rest
             }
         }
 
+        $asked = self::requestRadiusMi();
+        $suffix = sprintf(
+            ' %d of them fall inside your %s mile display radius.',
+            $inRange,
+            self::trimNumber($displayRadius)
+        );
+        if ($asked < $displayRadius) {
+            $suffix .= sprintf(
+                ' The request itself only asked out to %s miles, which is all this endpoint allows.',
+                self::trimNumber($asked)
+            );
+        }
+
+        // An empty response is the failure mode that looks like success. A
+        // wrong field mapping also reads zero, and so does calm weather, and
+        // nothing in this answer tells the two apart — say so rather than
+        // report a clean pass.
+        if ($result['ok'] && $result['records'] === [] && ($result['sample'] ?? null) === null) {
+            $suffix .= ' Nothing was returned, which is normal in calm weather — but it means the field'
+                . ' mapping is still unproven, because a wrong mapping reads zero too. Use'
+                . ' "Verify the mapping" below to check it against live lightning somewhere in the world.';
+        }
+
         return [
             'ok' => $result['ok'],
-            'message' => $result['ok']
-                ? $result['message'] . sprintf(' %d of them fall inside your %s mile display radius.', $inRange, rtrim(rtrim(number_format($displayRadius, 1), '0'), '.'))
-                : $result['message'],
+            'message' => $result['ok'] ? $result['message'] . $suffix : $result['message'],
             'detail' => [
                 'http_status' => $result['http_status'],
                 'records' => count($result['records']),
                 'in_range' => $inRange,
+                'radius_asked_mi' => $asked,
+                'mapping_proven' => $result['ok'] && ($result['sample'] ?? null) !== null,
                 'sample' => $result['sample'] ?? null,
             ],
         ];
     }
 
     /**
+     * Places that reliably have lightning. Lake Maracaibo tops the global
+     * flash-density maps year round; the rest spread the attempts across
+     * enough longitudes that at least one is usually in its afternoon.
+     *
+     * @var array<int,array{0:string,1:float,2:float}>
+     */
+    private const ACTIVE_PLACES = [
+        ['Lake Maracaibo, Venezuela', 9.8, -71.6],
+        ['Congo Basin, DR Congo', -2.5, 28.8],
+        ['Java, Indonesia', -6.6, 106.8],
+        ['Central Florida, USA', 28.5, -81.4],
+        ['Sierras de Córdoba, Argentina', -31.4, -64.2],
+    ];
+
+    /**
+     * Prove the field mapping against real data without waiting for a storm.
+     *
+     * A source that has never returned a record has never exercised the lat,
+     * lon and timestamp paths, so an alerting system can sit on a broken
+     * mapping indefinitely and look healthy the whole time. This asks the same
+     * endpoint about somewhere that does have lightning right now.
+     *
+     * Nothing is stored: the strikes are thousands of miles away and exist only
+     * to prove the response parses.
+     *
+     * @return array{ok:bool,message:string,detail:array<string,mixed>}
+     */
+    public static function probeMapping(int $maxAttempts = 4): array
+    {
+        $endpoint = Settings::getString('rest_endpoint');
+        if (strpos($endpoint, '{lat}') === false || strpos($endpoint, '{lon}') === false) {
+            return [
+                'ok' => false,
+                'message' => 'This endpoint has no {lat} / {lon} placeholders, so it cannot be pointed somewhere '
+                    . 'else. The mapping can only be proven when the feed next returns a strike.',
+                'detail' => [],
+            ];
+        }
+
+        $tried = [];
+        $attempts = min($maxAttempts, count(self::ACTIVE_PLACES));
+        for ($i = 0; $i < $attempts; $i++) {
+            [$name, $lat, $lon] = self::ACTIVE_PLACES[$i];
+            $result = self::fetch($lat, $lon);
+            $tried[] = $name;
+
+            if (!$result['ok']) {
+                return [
+                    'ok' => false,
+                    'message' => 'The request failed while checking ' . $name . '. ' . $result['message'],
+                    'detail' => ['tried' => $tried, 'http_status' => $result['http_status']],
+                ];
+            }
+            if ($result['records'] === []) {
+                continue;
+            }
+
+            $first = $result['records'][0];
+            return [
+                'ok' => true,
+                'message' => sprintf(
+                    'The mapping works. %d strike%s near %s parsed correctly — the first reads %.4f, %.4f at %s '
+                    . 'UTC. Nothing was stored; this only proves the response is being read properly, so a real '
+                    . 'strike near the venue will be too. Checked %d location%s, costing %d API access%s.',
+                    count($result['records']),
+                    count($result['records']) === 1 ? '' : 's',
+                    $name,
+                    $first['lat'],
+                    $first['lon'],
+                    gmdate('H:i:s', $first['ts']),
+                    count($tried),
+                    count($tried) === 1 ? '' : 's',
+                    count($tried),
+                    count($tried) === 1 ? '' : 'es'
+                ),
+                'detail' => [
+                    'tried' => $tried,
+                    'matched' => $name,
+                    'records' => count($result['records']),
+                    'sample' => $result['sample'] ?? null,
+                ],
+            ];
+        }
+
+        return [
+            'ok' => false,
+            'message' => sprintf(
+                'No lightning was found at any of the %d places checked (%s), so the mapping is still unproven. '
+                . 'That is not necessarily a fault — it can genuinely be quiet everywhere at once — but if the '
+                . 'endpoint and credentials are working, an empty answer from all of them more often means the '
+                . 'list path or field mapping is wrong. Try again in an hour before changing anything.',
+                count($tried),
+                implode(', ', $tried)
+            ),
+            'detail' => ['tried' => $tried],
+        ];
+    }
+
+    /** 30.0 reads better as "30" in a sentence. */
+    private static function trimNumber(float $value): string
+    {
+        return rtrim(rtrim(number_format($value, 1), '0'), '.');
+    }
+
+    /**
      * Replace the placeholders an endpoint template may contain.
      */
-    private static function substitute(string $url): string
+    private static function substitute(string $url, ?float $atLat = null, ?float $atLon = null): string
     {
         $radius = self::requestRadiusMi();
         return strtr($url, [
-            '{lat}' => (string) Settings::getFloat('venue_lat'),
-            '{lon}' => (string) Settings::getFloat('venue_lon'),
+            '{lat}' => (string) ($atLat ?? Settings::getFloat('venue_lat')),
+            '{lon}' => (string) ($atLon ?? Settings::getFloat('venue_lon')),
             '{radius_mi}' => (string) $radius,
             '{radius_km}' => (string) round($radius * Geo::MILES_TO_KM, 3),
             '{now}' => (string) time(),

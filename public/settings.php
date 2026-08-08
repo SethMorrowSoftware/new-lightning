@@ -901,6 +901,14 @@ View::header('settings');
     <div class="btn-row">
       <button type="submit" class="btn primary">Save data source</button>
       <button type="button" class="btn" data-test="test_source">Test this source</button>
+      <button type="button" class="btn" data-provider="rest" data-test="probe_mapping">Verify the mapping</button>
+    </div>
+    <div class="field-note" style="margin-top:-4px;">
+      <b>Test this source</b> proves the endpoint and credentials work. In calm weather it returns
+      nothing, which proves nothing about the field mapping — a wrong mapping also reads zero.
+      <b>Verify the mapping</b> asks the same endpoint about somewhere in the world that has lightning
+      right now, so the latitude, longitude and timestamp paths get exercised against real data.
+      Nothing is stored. It costs one API access per location checked, up to four.
     </div>
     <div id="testResult"></div>
   </form>

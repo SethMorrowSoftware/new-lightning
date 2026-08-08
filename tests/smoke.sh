@@ -190,6 +190,12 @@ status_is 200 "$code" "the data source tab renders"
 contains "${WORK}/source.html" "Largest radius the endpoint allows" "the radius cap field is present"
 contains "${WORK}/source.html" "Endpoint serves the last" "the data window field is present"
 contains "${WORK}/source.html" "lightning flash" "the free-tier Xweather preset is offered"
+contains "${WORK}/source.html" "Verify the mapping" "the mapping check is offered"
+
+# The mapping check is REST-only; the provider is still the simulator here.
+curl -s -o "${WORK}/probe.json" -c "$JAR" -b "$JAR" -H 'Content-Type: application/json' \
+  -H "X-CSRF-Token: ${CSRF}" -d '{"action":"probe_mapping"}' "${BASE}/api/action.php"
+contains "${WORK}/probe.json" "only applies to the REST provider" "the mapping check refuses a non-REST provider"
 
 code=$(curl -s -o "${WORK}/capped.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
   -d "csrf_token=${SCSRF}" -d "action=save" -d "provider=rest" \
