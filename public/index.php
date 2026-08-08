@@ -67,9 +67,11 @@ View::start(['title' => 'Dashboard', 'leaflet' => true]);
 View::header('dashboard');
 ?>
 
-<div id="alertBanner" class="alert-banner clear">
+<?php /* Neutral until the first poll answers: a green tick before anything has
+         been read would say "all clear" on no evidence at all. */ ?>
+<div id="alertBanner" class="alert-banner unknown">
   <div class="alert-icon" id="alertIcon">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 0 1 4.6 1.3c0 1.6-2.2 2-2.2 3.2"/><path d="M12 17h.01"/></svg>
   </div>
   <div class="alert-text">
     <div class="t1" id="alertT1">Loading…</div>

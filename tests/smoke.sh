@@ -38,6 +38,7 @@ status_is() { # status_is <expected> <actual> <description>
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   # Put back any installation that was here before the test ran.
+  rm -f "${ROOT}/public/smoke-slow-probe.php"
   rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
   if [ -d "${WORK}/backup-data" ]; then mv "${WORK}/backup-data" "${ROOT}/data"; fi
   if [ -f "${WORK}/backup-config.php" ]; then mv "${WORK}/backup-config.php" "${ROOT}/config/config.php"; fi
@@ -51,7 +52,10 @@ trap cleanup EXIT
 rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
 mkdir -p "${ROOT}/data"
 
-php -S "127.0.0.1:${PORT}" -t "${ROOT}/public" >"${WORK}/server.log" 2>&1 &
+# Workers, so the suite can tell "one request blocks another" from "the test
+# server only runs one request at a time". A single-process server would
+# serialise everything no matter what the application does.
+PHP_CLI_SERVER_WORKERS=4 php -S "127.0.0.1:${PORT}" -t "${ROOT}/public" >"${WORK}/server.log" 2>&1 &
 SERVER_PID=$!
 
 for _ in $(seq 1 40); do
@@ -109,6 +113,7 @@ contains "${WORK}/dash.html" "Castle Fun Center" "the venue name appears"
 contains "${WORK}/dash.html" "Live map" "the map panel is present"
 contains "${WORK}/dash.html" "leaflet" "Leaflet is loaded"
 contains "${WORK}/dash.html" "sw-boot" "the boot data block is present"
+contains "${WORK}/dash.html" 'class="alert-banner unknown"' "the banner starts neutral, not on a green all-clear"
 contains "${WORK}/dash.html" "Strike log" "the strike log panel is present"
 contains "${WORK}/dash.html" "Data source" "the data source panel is present"
 
@@ -217,6 +222,39 @@ contains "${WORK}/widewatch.html" "Nothing was saved" "a watch radius beyond the
 curl -s -o /dev/null -c "$JAR" -b "$JAR" \
   -d "csrf_token=${SCSRF}" -d "action=save" -d "provider=simulator" \
   -d "rest_max_radius_mi=0" -d "rest_data_window_minutes=0" "${BASE}/settings.php?tab=source"
+
+group "Concurrency"
+# A slow authenticated request must not freeze the dashboard. PHP holds the
+# session lock for the whole of a request, so before this was fixed every poll
+# queued behind whichever connection test or mapping check the operator had
+# just started: the page sat on its "Loading…" placeholders for the duration
+# and never said why. A deterministic sleep stands in for that provider call so
+# the check does not depend on the network being slow.
+#
+# The probe follows api/action.php's real sequence — boot, check the CSRF
+# token, then do the slow thing — because the token check is itself a session
+# read, and a read that re-opens the session takes the lock straight back.
+cat > "${ROOT}/public/smoke-slow-probe.php" <<'PHP'
+<?php
+require __DIR__ . '/../src/bootstrap.php';
+\StormWatch\App::boot('auth', true);
+if (!\StormWatch\Http::checkCsrf()) {
+    \StormWatch\Http::jsonError('Bad CSRF token.', 419);
+}
+sleep(6);
+\StormWatch\Http::json(['ok' => true]);
+PHP
+
+curl -s -o "${WORK}/probe-slow.json" -b "$JAR" -H 'Content-Type: application/json' \
+  -H "X-CSRF-Token: ${CSRF}" -d '{}' "${BASE}/smoke-slow-probe.php" &
+PROBE_PID=$!
+sleep 1
+ELAPSED=$(curl -s -o /dev/null -w '%{time_total}' -b "$JAR" "${BASE}/api/state.php")
+check "the dashboard keeps polling while a slow action runs (${ELAPSED}s)" \
+  "$(awk -v t="$ELAPSED" 'BEGIN { print (t < 3) ? 0 : 1 }')"
+wait "$PROBE_PID" 2>/dev/null
+contains "${WORK}/probe-slow.json" '"ok":true' "the slow action itself still authenticates and completes"
+rm -f "${ROOT}/public/smoke-slow-probe.php"
 
 group "Scheduled runs and ingest"
 CRON_TOKEN=$(php -r '

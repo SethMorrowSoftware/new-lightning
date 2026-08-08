@@ -19,6 +19,7 @@
     notifEnabled: localStorage.getItem(STORE + 'browser_notifications') === '1',
     lastAlertSignature: null,
     pollTimer: null,
+    inFlight: null,
     failures: 0
   };
 
@@ -310,6 +311,10 @@
     warning: {
       icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>',
       title: 'Lightning nearby'
+    },
+    unknown: {
+      icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 0 1 4.6 1.3c0 1.6-2.2 2-2.2 3.2"/><path d="M12 17h.01"/></svg>',
+      title: 'Alert state unknown'
     }
   };
 
@@ -563,47 +568,140 @@
 
   // ---------- polling ----------
 
+  /* A poll that never answers is the worst failure this page has, because it
+     looks exactly like a page that has nothing to report. Without a deadline
+     the browser waits indefinitely and the placeholders stay up. Give up
+     inside two refresh intervals and say what happened. */
+  var POLL_TIMEOUT_MS = Math.max(20, Math.max(3, boot.refreshSeconds) * 2) * 1000;
+
+  function fetchState(url) {
+    var options = { credentials: 'same-origin', headers: { 'Accept': 'application/json' } };
+    if (typeof AbortController === 'undefined') return fetch(url, options);
+
+    var controller = new AbortController();
+    options.signal = controller.signal;
+    var timer = setTimeout(function () { controller.abort(); }, POLL_TIMEOUT_MS);
+    return fetch(url, options).then(
+      function (response) { clearTimeout(timer); return response; },
+      function (error) {
+        clearTimeout(timer);
+        if (error && error.name === 'AbortError') {
+          throw new Error('The server did not answer within '
+            + Math.round(POLL_TIMEOUT_MS / 1000) + ' seconds.');
+        }
+        throw error;
+      }
+    );
+  }
+
+  /* A server error on shared hosting usually arrives as an HTML page rather
+     than JSON. Quote the top of it: that line is normally the whole diagnosis,
+     and it is the one thing the operator cannot get at from the browser. */
+  function snippet(text) {
+    var clean = String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (clean === '') return '';
+    return clean.length > 160 ? clean.slice(0, 160) + '…' : clean;
+  }
+
+  /* Say so in the places an operator is already looking. A dashboard that
+     stops updating while still showing a green tick is worse than one that
+     admits it is broken — this page is used to decide whether it is safe to
+     be outside. */
+  function reportPollFailure(detail) {
+    el('modeBadge').className = 'mode-badge live-err';
+    el('modeBadgeText').textContent = 'Dashboard not updating';
+    el('sourceDot').className = 'status-dot err';
+    el('sourceText').textContent = detail;
+
+    if (state.level !== null) return;
+
+    // Nothing has ever been read, so nothing on this page is known to be true.
+    el('alertBanner').className = 'alert-banner unknown';
+    el('alertIcon').innerHTML = BANNER.unknown.icon;
+    el('alertT1').textContent = BANNER.unknown.title;
+    el('alertT2').textContent = 'This page cannot read the alert state, so it cannot tell you whether '
+      + 'there is lightning nearby. Slack and email alerts are sent by the server and do not '
+      + 'depend on this page.';
+    el('cronDot').className = 'status-dot err';
+    el('cronText').textContent = 'Unknown — no answer from the server.';
+    el('notifyDot').className = 'status-dot err';
+    el('notifyText').textContent = 'Unknown — no answer from the server.';
+    el('providerSub').textContent = '';
+  }
+
+  function applyState(data) {
+    var isFirstLoad = state.maxId === 0;
+
+    data.strikes.forEach(function (strike) {
+      plotStrike(strike, !isFirstLoad);
+      state.strikes.unshift(strike);
+    });
+    if (data.strikes.length) {
+      state.strikes.sort(function (a, b) { return b.ts - a.ts || b.id - a.id; });
+      if (state.strikes.length > 300) state.strikes.length = 300;
+    }
+    state.maxId = Math.max(state.maxId, data.max_id || 0);
+
+    expireMarkers();
+    renderState(data);
+    renderStats(data);
+    renderSource(data);
+    if (data.strikes.length || isFirstLoad) renderLog();
+  }
+
   function poll() {
+    // A slow poll must not have a second one stacked on top of it: that turns
+    // one stalled request into a queue of them.
+    if (state.inFlight) return state.inFlight;
+
     var url = boot.stateUrl + (state.maxId ? '?since_id=' + state.maxId : '');
-    return fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+    var request = fetchState(url)
       .then(function (response) {
         if (response.status === 401) {
           window.location.href = boot.loginUrl || 'login.php';
           throw new Error('Signed out');
         }
-        if (!response.ok) throw new Error('HTTP ' + response.status);
-        return response.json();
+        return response.text().then(function (text) {
+          var data = null;
+          try { data = JSON.parse(text); } catch (e) { data = null; }
+
+          if (!response.ok) {
+            var reason = (data && data.error) ? data.error : snippet(text);
+            throw new Error('The server answered HTTP ' + response.status
+              + (reason ? ' — ' + reason : '.'));
+          }
+          if (data === null) {
+            var head = snippet(text);
+            throw new Error('The server\'s answer was not JSON'
+              + (head ? ' — ' + head : '.'));
+          }
+          return data;
+        });
       })
       .then(function (data) {
         state.failures = 0;
-        var isFirstLoad = state.maxId === 0;
-
-        data.strikes.forEach(function (strike) {
-          plotStrike(strike, !isFirstLoad);
-          state.strikes.unshift(strike);
-        });
-        if (data.strikes.length) {
-          state.strikes.sort(function (a, b) { return b.ts - a.ts || b.id - a.id; });
-          if (state.strikes.length > 300) state.strikes.length = 300;
+        try {
+          applyState(data);
+        } catch (e) {
+          // A rendering bug is a different problem from an unreachable server,
+          // so do not let it be reported as one.
+          throw new Error('The dashboard could not display the server\'s answer: '
+            + (e && e.message ? e.message : e));
         }
-        state.maxId = Math.max(state.maxId, data.max_id || 0);
-
-        expireMarkers();
-        renderState(data);
-        renderStats(data);
-        renderSource(data);
-        if (data.strikes.length || isFirstLoad) renderLog();
       })
       .catch(function (error) {
         if (error && error.message === 'Signed out') return;
         state.failures += 1;
-        if (state.failures === 3) {
-          el('modeBadge').className = 'mode-badge live-err';
-          el('modeBadgeText').textContent = 'Dashboard offline';
-          el('sourceDot').className = 'status-dot err';
-          el('sourceText').textContent = 'The dashboard cannot reach the server. Alerts may still be firing server-side.';
-        }
+        var detail = (error && error.message) ? error.message : 'The request failed.';
+        reportPollFailure(state.failures > 1
+          ? detail + ' (' + state.failures + ' attempts in a row.)'
+          : detail);
       });
+
+    state.inFlight = request;
+    var release = function () { state.inFlight = null; };
+    request.then(release, release);
+    return request;
   }
 
   function schedule() {

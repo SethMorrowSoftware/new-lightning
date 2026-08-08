@@ -47,6 +47,14 @@ final class App
             }
         }
 
+        // The JSON endpoints read the session to identify the caller and never
+        // write to it again, so release its lock here. Holding it would make
+        // the dashboard's polls queue behind whichever slow action the operator
+        // last started — see Http::closeSession().
+        if ($json) {
+            Http::closeSession();
+        }
+
         self::$booted = true;
     }
 

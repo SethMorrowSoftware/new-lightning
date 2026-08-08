@@ -8,7 +8,11 @@ namespace StormWatch;
 
 final class Http
 {
+    /** The session is open right now, and its lock is held. */
     private static bool $sessionStarted = false;
+
+    /** $_SESSION has been read this request, whether or not it is still open. */
+    private static bool $sessionLoaded = false;
 
     private static ?string $basePath = null;
 
@@ -19,6 +23,7 @@ final class Http
         }
         if (session_status() === PHP_SESSION_ACTIVE) {
             self::$sessionStarted = true;
+            self::$sessionLoaded = true;
             return;
         }
         // Subfolder hosting means sharing a domain with whatever else lives
@@ -34,6 +39,47 @@ final class Http
         ]);
         session_start();
         self::$sessionStarted = true;
+        self::$sessionLoaded = true;
+    }
+
+    /**
+     * Make $_SESSION readable without necessarily holding the lock.
+     *
+     * PHP leaves $_SESSION populated after the session is written back, so
+     * anything that only reads it can go straight to the array. Re-opening
+     * for a read would take the lock again and undo closeSession().
+     */
+    private static function loadSession(): void
+    {
+        if (self::$sessionLoaded) {
+            return;
+        }
+        self::startSession();
+    }
+
+    /**
+     * Write the session back and let go of its lock.
+     *
+     * PHP's file session handler holds an exclusive lock for as long as the
+     * request runs, and every request for the same signed-in operator queues
+     * behind it. That is invisible until something slow holds the lock: a
+     * connection test or a mapping check talks to a weather API for up to a
+     * minute, and for that whole minute the dashboard's polls sit waiting and
+     * the page shows nothing but its "Loading…" placeholders.
+     *
+     * Endpoints that only read the session should therefore hand it back as
+     * soon as the caller has been identified. Anything that needs it again
+     * re-opens it through startSession() and takes the lock properly.
+     */
+    public static function closeSession(): void
+    {
+        if (!self::$sessionStarted || PHP_SAPI === 'cli') {
+            return;
+        }
+        if (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+        }
+        self::$sessionStarted = false;
     }
 
     public static function isHttps(): bool
@@ -238,8 +284,11 @@ final class Http
 
     public static function csrfToken(): string
     {
-        self::startSession();
+        self::loadSession();
         if (empty($_SESSION['csrf_token'])) {
+            // Minting a token is a write, so the session has to be open for it
+            // to survive the request.
+            self::startSession();
             $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
         }
         return (string) $_SESSION['csrf_token'];
@@ -252,7 +301,11 @@ final class Http
 
     public static function checkCsrf(?string $token = null): bool
     {
-        self::startSession();
+        // A read: never re-take the lock for it. api/action.php checks the
+        // token and then makes a provider call that can run for a minute, so
+        // re-opening here would hold the session for that whole call and stall
+        // the dashboard — the exact problem closeSession() exists to avoid.
+        self::loadSession();
         $token ??= (string) ($_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
         $expected = (string) ($_SESSION['csrf_token'] ?? '');
         return $expected !== '' && $token !== '' && hash_equals($expected, $token);
