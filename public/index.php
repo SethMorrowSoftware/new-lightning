@@ -42,6 +42,7 @@ $boot = [
     'timezone' => Settings::getString('timezone'),
     'refreshSeconds' => Settings::getInt('ui_refresh_seconds'),
     'mapZoom' => Settings::getInt('map_zoom'),
+    'mapStyle' => Settings::getString('map_style'),
     'markerTtlMinutes' => Settings::getInt('marker_ttl_minutes'),
     'allClearMinutes' => Settings::getInt('all_clear_minutes'),
     'radar' => [
@@ -95,7 +96,7 @@ View::header('dashboard');
       <div class="radar-legend">
         <span><i class="swatch" style="background:var(--danger)"></i>Within <?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?></span>
         <span><i class="swatch" style="background:var(--amber)"></i>To <?= Http::e($fmt(Settings::getFloat('watch_radius_mi'))) ?></span>
-        <span><i class="swatch" style="background:var(--bolt)"></i>To <?= Http::e($fmt(Settings::getFloat('display_radius_mi'))) ?></span>
+        <span><i class="swatch" id="ringSwatch" style="background:var(--bolt)"></i>To <?= Http::e($fmt(Settings::getFloat('display_radius_mi'))) ?></span>
         <span class="grow"></span>
         <?php if (Settings::getString('radar_overlay') !== 'none'): ?>
         <label class="opacity-control" for="radarOpacity">

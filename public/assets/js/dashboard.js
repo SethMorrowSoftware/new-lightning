@@ -57,7 +57,8 @@
   function colourForDistance(mi) {
     if (mi <= boot.radii.alert) return '#FF4D5E';
     if (mi <= boot.radii.watch) return '#FFB627';
-    return '#6FE3FF';
+    // Furthest band tracks the basemap, for the same contrast reason as the rings.
+    return basemap.displayRing;
   }
 
   function toast(message, kind) {
@@ -107,6 +108,33 @@
   var hasLeaflet = typeof L !== 'undefined' && L && typeof L.map === 'function';
   var map = null;
 
+  /* All three are CARTO's free public tiles: same attribution, no account.
+     The rings have to be redrawn to suit, because a colour picked to glow on
+     Dark Matter is nearly invisible on a pale one. */
+  var BASEMAPS = {
+    dark: {
+      url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+      displayRing: '#6FE3FF', ringWeight: 1, ringOpacity: 0.5, background: '#0B1020'
+    },
+    muted: {
+      url: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      displayRing: '#0FA3C7', ringWeight: 2, ringOpacity: 0.75, background: '#E8E4DC'
+    },
+    light: {
+      url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      displayRing: '#0B7A96', ringWeight: 2, ringOpacity: 0.85, background: '#EAEAEA'
+    }
+  };
+  var basemap = BASEMAPS[boot.mapStyle] || BASEMAPS.muted;
+
+  // Tiles load a moment after the panel paints; match the gap to the map so it
+  // is not a dark hole on a pale basemap. Also keep the legend honest — its
+  // furthest swatch has to be the colour the ring is actually drawn in.
+  var mapEl = el('map');
+  if (mapEl) mapEl.style.background = basemap.background;
+  var ringSwatch = el('ringSwatch');
+  if (ringSwatch) ringSwatch.style.background = basemap.displayRing;
+
   function showMapUnavailable(reason) {
     var container = el('map');
     if (!container) return;
@@ -121,7 +149,7 @@
     map = L.map('map', { zoomControl: true, attributionControl: true })
       .setView([boot.venue.lat, boot.venue.lon], boot.mapZoom);
 
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(basemap.url, {
       attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
       subdomains: 'abcd',
       maxZoom: 19
@@ -130,14 +158,15 @@
     [
       { mi: boot.radii.alert, color: '#FF4D5E' },
       { mi: boot.radii.watch, color: '#FFB627' },
-      { mi: boot.radii.display, color: '#6FE3FF' }
+      { mi: boot.radii.display, color: basemap.displayRing }
     ].forEach(function (ring) {
       if (!ring.mi) return;
       L.circle([boot.venue.lat, boot.venue.lon], {
         radius: ring.mi * MI_TO_M,
         color: ring.color,
-        weight: 1,
-        opacity: 0.5,
+        // A hairline at half opacity disappears against a pale basemap.
+        weight: basemap.ringWeight,
+        opacity: basemap.ringOpacity,
         fill: false,
         dashArray: '4 6',
         interactive: false

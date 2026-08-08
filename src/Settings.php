@@ -138,6 +138,9 @@ final class Settings
             // ---- Presentation ----
             'ui_refresh_seconds' => ['type' => 'int', 'default' => 10, 'min' => 3, 'max' => 300],
             'map_zoom'         => ['type' => 'int', 'default' => 10, 'min' => 3, 'max' => 16],
+            // Dark Matter looks the part but reads poorly in daylight, and this
+            // map gets looked at outdoors on a bright afternoon.
+            'map_style'        => ['type' => 'enum', 'default' => 'muted', 'options' => ['dark', 'muted', 'light']],
             'radar_overlay'    => ['type' => 'enum', 'default' => 'rainviewer', 'options' => ['none', 'rainviewer', 'nexrad']],
             'radar_opacity'    => ['type' => 'int', 'default' => 55, 'min' => 5, 'max' => 100],
             'marker_ttl_minutes' => ['type' => 'int', 'default' => 60, 'min' => 1, 'max' => 720],
