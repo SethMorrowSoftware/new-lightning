@@ -23,6 +23,7 @@ use StormWatch\Geo;
 use StormWatch\Ingest;
 use StormWatch\Migrations;
 use StormWatch\Notifiers\SlackNotifier;
+use StormWatch\Providers\Rest;
 use StormWatch\Providers\Simulator;
 use StormWatch\Runner;
 use StormWatch\Settings;
@@ -759,6 +760,86 @@ T::group('Adaptive polling');
     T::same(60, Runner::restPollInterval(), 'a misconfigured active cadence never slows things down');
     Settings::put(['rest_poll_seconds' => 300, 'rest_active_poll_seconds' => 60]);
     resetData();
+}
+
+T::group('Provider limits: radius cap and data window');
+{
+    resetData();
+    foreach ([
+        'provider' => 'rest',
+        'rest_endpoint' => 'https://data.api.xweather.com/lightning/flash/closest?p={lat},{lon}&radius={radius_mi}miles',
+        'alert_radius_mi' => 10.0,
+        'watch_radius_mi' => 20.0,
+        'display_radius_mi' => 30.0,
+        'rest_max_radius_mi' => 0.0,
+        'rest_data_window_minutes' => 0,
+    ] as $key => $val) {
+        Settings::putRaw($key, $val);
+    }
+    T::same(30.0, Rest::requestRadiusMi(), 'with no cap the request uses the full display radius');
+
+    // Xweather's lightning/flash refuses anything over 40km, so a 30 mile
+    // display radius has to be asked for as 25 or every poll fails.
+    Settings::putRaw('rest_max_radius_mi', 25.0);
+    T::same(25.0, Rest::requestRadiusMi(), 'a capped endpoint is asked for the cap, not the display radius');
+
+    Settings::putRaw('display_radius_mi', 20.0);
+    T::same(20.0, Rest::requestRadiusMi(), 'a display radius inside the cap is passed through untouched');
+    Settings::putRaw('display_radius_mi', 30.0);
+
+    // A watch ring wider than the feed can answer for means strikes in the gap
+    // are never fetched — the dashboard stays green through a storm.
+    $errors = Settings::put(['watch_radius_mi' => '30', 'display_radius_mi' => '30']);
+    T::ok(isset($errors['watch_radius_mi']), 'a watch radius beyond the endpoint cap is refused');
+
+    $errors = Settings::put(['watch_radius_mi' => '20', 'display_radius_mi' => '30']);
+    T::ok(!isset($errors['watch_radius_mi']), 'a display radius beyond the cap is allowed — it only costs map coverage');
+
+    // Polling an endpoint slower than its own data window drops strikes that
+    // arrive and expire between two polls.
+    Settings::putRaw('rest_data_window_minutes', 5);
+    $errors = Settings::put(['rest_poll_seconds' => '300']);
+    T::ok(isset($errors['rest_poll_seconds']), 'polling at the full 5 minute window is refused');
+
+    $errors = Settings::put(['rest_poll_seconds' => '120']);
+    T::ok(!isset($errors['rest_poll_seconds']), '120s leaves margin inside a 5 minute window');
+
+    $errors = Settings::put(['rest_active_poll_seconds' => '240']);
+    T::ok(isset($errors['rest_active_poll_seconds']), 'the storm cadence is held to the window too');
+
+    Settings::putRaw('rest_data_window_minutes', 0);
+    $errors = Settings::put(['rest_poll_seconds' => '600']);
+    T::ok(!isset($errors['rest_poll_seconds']), 'an unknown window (0) imposes no ceiling');
+
+    foreach ([
+        'provider' => 'simulator',
+        'rest_max_radius_mi' => 0.0,
+        'rest_poll_seconds' => 300,
+        'rest_active_poll_seconds' => 60,
+        'display_radius_mi' => 30.0,
+        'watch_radius_mi' => 20.0,
+    ] as $key => $val) {
+        Settings::putRaw($key, $val);
+    }
+}
+
+T::group('Provider error messages');
+{
+    // The message an operator reads at 9pm has to name the cause. This is the
+    // exact body Xweather returns for an endpoint outside the plan.
+    $scope = '{"success":false,"error":{"code":"insufficient_scope","description":'
+        . '"The request requires a different account subscription level."},"response":[]}';
+    $message = Rest::explainStatus(401, $scope);
+    T::ok(stripos($message, 'plan does not cover') !== false, 'a scope failure is named as a plan problem');
+    T::ok(stripos($message, 'lightning/flash') !== false, 'and points at the endpoint the free tier does include');
+    T::ok(stripos($message, 'Check the ID and secret') === false, 'without blaming the credentials, which were accepted');
+
+    $bad = '{"success":false,"error":{"code":"invalid_client","description":"Invalid client id."}}';
+    T::ok(stripos(Rest::explainStatus(401, $bad), 'rejected the credentials') !== false, 'a bad client id is named as a credential problem');
+
+    T::ok(stripos(Rest::explainStatus(429, '{}'), 'rate limiting') !== false, 'a 429 suggests slowing the poll down');
+    T::ok(stripos(Rest::explainStatus(503, 'upstream down'), 'their end') !== false, 'a 5xx is attributed to the provider');
+    T::ok(stripos(Rest::explainStatus(418, 'teapot'), 'HTTP 418') !== false, 'an unrecognised status still reports its code and body');
 }
 
 T::group('Concurrent evaluation');

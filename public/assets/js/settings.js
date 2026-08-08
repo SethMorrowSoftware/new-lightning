@@ -45,8 +45,34 @@
   /* ---- Known providers. Filling these in by hand from the API docs is
          where a REST integration usually goes wrong. ---- */
   var PRESETS = {
-    xweather: {
-      label: 'Xweather — lightning, all strike types',
+    xweather_flash: {
+      label: 'Xweather — lightning flash (included with every plan)',
+      endpoint: 'https://data.api.xweather.com/lightning/flash/closest'
+        + '?p={lat},{lon}&radius={radius_mi}miles&limit=100&format=json',
+      auth: 'client_pair',
+      authName: 'client_id',
+      secretName: 'client_secret',
+      root: 'response',
+      lat: 'loc.lat',
+      lon: 'loc.long',
+      time: 'ob.timestamp',
+      timeFormat: 'epoch_s',
+      idle: 120,
+      active: 60,
+      budget: 15000,
+      maxRadius: 25,
+      window: 5,
+      note: 'The endpoint every Xweather plan includes, the free tier among them. Put your '
+        + '<b>client ID</b> in the key field and your <b>client secret</b> in the secret field — '
+        + 'Xweather issues a pair, not a single key.<br><br>It carries two limits, and both have been '
+        + 'filled in for you: requests are capped at a <b>25 mile radius</b>, and it only serves the '
+        + '<b>last 5 minutes</b> of strikes. The idle poll is therefore 120s, not 300s — polling at '
+        + 'the full 5 minutes would leave no margin, and a late cron run would silently miss strikes. '
+        + 'Press <b>Test this source</b> after saving: it reports the first record returned, so any '
+        + 'mismatch in the field mapping is obvious.'
+    },
+    xweather_enterprise: {
+      label: 'Xweather — lightning (needs the Lightning Enterprise add-on)',
       endpoint: 'https://data.api.xweather.com/lightning/closest'
         + '?p={lat},{lon}&radius={radius_mi}miles&filter=all&limit=100&format=json',
       auth: 'client_pair',
@@ -57,34 +83,16 @@
       lon: 'loc.long',
       time: 'ob.timestamp',
       timeFormat: 'epoch_s',
-      idle: 300,
+      idle: 120,
       active: 60,
       budget: 15000,
-      note: 'Uses the lightning endpoint with <code>filter=all</code>, so both cloud-to-ground and '
-        + 'intracloud strikes are returned. Put your <b>client ID</b> in the key field and your '
-        + '<b>client secret</b> in the secret field — Xweather issues a pair, not a single key. '
-        + 'The free tier is 15,000 accesses a month; the poll intervals and allowance have been set '
-        + 'to fit inside it. Press <b>Test this source</b> after saving: it reports the first record '
-        + 'returned, so any mismatch in the field mapping is obvious.'
-    },
-    xweather_within: {
-      label: 'Xweather — lightning within a radius',
-      endpoint: 'https://data.api.xweather.com/lightning/within'
-        + '?p={lat},{lon}&radius={radius_mi}miles&filter=all&limit=100&format=json',
-      auth: 'client_pair',
-      authName: 'client_id',
-      secretName: 'client_secret',
-      root: 'response',
-      lat: 'loc.lat',
-      lon: 'loc.long',
-      time: 'ob.timestamp',
-      timeFormat: 'epoch_s',
-      idle: 300,
-      active: 60,
-      budget: 15000,
-      note: 'Same credentials and mapping as the option above, using the <code>within</code> action '
-        + 'instead of <code>closest</code>. Try this one if <code>closest</code> returns strikes from '
-        + 'further away than you expect.'
+      maxRadius: 0,
+      window: 0,
+      note: '<b>Only pick this if your account carries the Lightning Enterprise add-on.</b> Without '
+        + 'it the endpoint answers <code>HTTP 401 insufficient_scope</code> — the credentials are '
+        + 'accepted, the plan simply does not cover this path. Use the flash option above instead. '
+        + 'What the add-on buys is no 25 mile cap and history beyond the last 5 minutes, which is why '
+        + 'the radius limit and poll window are left unset here.'
     }
   };
 
@@ -113,6 +121,8 @@
       set('rest_poll_seconds', preset.idle);
       set('rest_active_poll_seconds', preset.active);
       set('api_monthly_budget', preset.budget);
+      set('rest_max_radius_mi', preset.maxRadius);
+      set('rest_data_window_minutes', preset.window);
 
       var mode = document.getElementById('rest_auth_mode');
       if (mode) mode.dispatchEvent(new Event('change'));
