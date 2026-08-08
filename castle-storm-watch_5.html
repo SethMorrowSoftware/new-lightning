@@ -1,0 +1,931 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Storm Watch — Castle Fun Center</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<style>
+  :root{
+    --bg-0:#080C16; --bg-1:#0E1526; --bg-2:#141C33; --panel:#131A2E;
+    --border:#232C48; --border-soft:#1B2440;
+    --amber:#FFB627; --amber-dim:#8A6A21;
+    --bolt:#6FE3FF; --danger:#FF4D5E; --safe:#4ADE9C;
+    --text-hi:#F3F5FA; --text-mid:#9AA4C0; --text-lo:#5C6483;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:radial-gradient(ellipse at 50% -10%, #16203D 0%, var(--bg-0) 55%);
+    color:var(--text-hi); font-family:'Inter',sans-serif;
+    min-height:100vh; padding:28px 20px 60px;
+  }
+  .wrap{max-width:1180px;margin:0 auto;}
+  header{
+    display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;
+    margin-bottom:22px;padding-bottom:20px;border-bottom:1px solid var(--border-soft);
+  }
+  .brand{display:flex;align-items:center;gap:14px;}
+  .crest{
+    width:46px;height:46px;border-radius:10px;
+    background:linear-gradient(160deg,#1C2545,#0E1428);
+    border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;flex-shrink:0;
+  }
+  .crest svg{width:24px;height:24px;}
+  h1{font-family:'Space Grotesk',sans-serif;font-size:22px;font-weight:700;margin:0;letter-spacing:0.2px;}
+  .addr{color:var(--text-mid);font-size:13px;margin-top:3px;}
+  .headmeta{text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text-mid);}
+  .mode-badge{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:4px 10px;border-radius:20px;font-size:11px;font-weight:500;letter-spacing:0.4px;margin-bottom:8px;
+    border:1px solid var(--amber-dim); background:rgba(255,182,39,0.1); color:var(--amber);
+  }
+  .mode-badge.live-ok{border-color:rgba(74,222,156,0.4);background:rgba(74,222,156,0.1);color:var(--safe);}
+  .mode-badge.live-err{border-color:rgba(255,77,94,0.4);background:rgba(255,77,94,0.1);color:var(--danger);}
+  .mode-badge .dot{width:6px;height:6px;border-radius:50%;background:currentColor;}
+
+  .grid{display:grid;grid-template-columns:1fr 360px;gap:20px;}
+  @media (max-width:860px){.grid{grid-template-columns:1fr;}}
+
+  .panel{background:var(--panel);border:1px solid var(--border-soft);border-radius:14px;padding:20px;}
+  .panel + .panel{margin-top:20px;}
+  .panel-title{
+    font-family:'Space Grotesk',sans-serif;font-size:13px;font-weight:700;
+    text-transform:uppercase;letter-spacing:1px;color:var(--text-mid);
+    margin:0 0 16px;display:flex;justify-content:space-between;align-items:center;
+  }
+
+  .alert-banner{
+    border-radius:14px;padding:18px 20px;display:flex;align-items:center;gap:14px;margin-bottom:20px;
+    border:1px solid var(--border-soft);background:var(--bg-1);transition:background .3s, border-color .3s;
+  }
+  .alert-banner.clear{border-color:rgba(74,222,156,0.25);}
+  .alert-banner.danger{
+    background:linear-gradient(90deg, rgba(255,77,94,0.16), rgba(255,77,94,0.04));
+    border-color:var(--danger); animation:pulseBorder 1.4s ease-in-out infinite;
+  }
+  @keyframes pulseBorder{0%,100%{box-shadow:0 0 0 0 rgba(255,77,94,0.35);}50%{box-shadow:0 0 0 8px rgba(255,77,94,0);}}
+  .alert-icon{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+  .alert-banner.clear .alert-icon{background:rgba(74,222,156,0.12);color:var(--safe);}
+  .alert-banner.danger .alert-icon{background:rgba(255,77,94,0.18);color:var(--danger);}
+  .alert-icon svg{width:22px;height:22px;}
+  .alert-text .t1{font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:16px;}
+  .alert-banner.clear .t1{color:var(--safe);}
+  .alert-banner.danger .t1{color:var(--danger);}
+  .alert-text .t2{font-size:12.5px;color:var(--text-mid);margin-top:2px;}
+
+  .map-wrap{position:relative;}
+  #map{width:100%;height:460px;border-radius:12px;border:1px solid var(--border);background:var(--bg-1);}
+  .leaflet-popup-content-wrapper{background:#141C33;color:var(--text-hi);border-radius:8px;}
+  .leaflet-popup-tip{background:#141C33;}
+  .leaflet-container{font-family:'Inter',sans-serif;}
+  .leaflet-control-attribution{background:rgba(8,12,22,0.75) !important;color:var(--text-lo) !important;font-size:10px !important;}
+  .leaflet-control-attribution a{color:var(--text-mid) !important;}
+  .leaflet-control-zoom a{background:#141C33 !important;color:var(--text-hi) !important;border-color:var(--border) !important;}
+
+  .radar-legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:12px;color:var(--text-mid);}
+  .radar-legend span{display:inline-flex;align-items:center;gap:6px;}
+  .swatch{width:9px;height:9px;border-radius:50%;display:inline-block;}
+
+  .stat-row{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:16px;}
+  .stat{background:var(--bg-1);border:1px solid var(--border-soft);border-radius:10px;padding:12px 14px;}
+  .stat .n{font-family:'JetBrains Mono',monospace;font-size:20px;font-weight:500;}
+  .stat .l{font-size:11px;color:var(--text-mid);margin-top:4px;letter-spacing:.3px;}
+
+  .log-list{max-height:230px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;}
+  .log-list::-webkit-scrollbar{width:6px;}
+  .log-list::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+  .log-row{
+    display:flex;justify-content:space-between;align-items:center;padding:9px 12px;border-radius:8px;
+    background:var(--bg-1);border:1px solid var(--border-soft);font-family:'JetBrains Mono',monospace;font-size:12px;
+    cursor:pointer;
+  }
+  .log-row.close{border-color:rgba(255,77,94,0.4);background:rgba(255,77,94,0.06);}
+  .log-row .dist{font-weight:500;}
+  .log-row.close .dist{color:var(--danger);}
+  .log-empty{color:var(--text-lo);font-size:12.5px;text-align:center;padding:24px 0;}
+
+  .field{margin-bottom:14px;}
+  .field label{display:block;font-size:12.5px;color:var(--text-mid);margin-bottom:6px;}
+  .field input[type=email], .field input[type=number], .field input[type=text],
+  .field input[type=password], .field select{
+    width:100%;background:var(--bg-1);border:1px solid var(--border);
+    color:var(--text-hi);border-radius:8px;padding:9px 11px;font-size:13px;font-family:'Inter',sans-serif;
+  }
+  .field select{appearance:none;cursor:pointer;}
+  .field input:focus, .field select:focus{outline:none;border-color:var(--amber-dim);}
+  .field-note{font-size:11.5px;color:var(--text-lo);line-height:1.5;margin-top:5px;}
+  .field-grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+
+  .row-between{display:flex;justify-content:space-between;align-items:center;gap:12px;}
+  .switch{position:relative;width:38px;height:22px;flex-shrink:0;}
+  .switch input{opacity:0;width:0;height:0;}
+  .slider{position:absolute;inset:0;background:var(--border);border-radius:22px;cursor:pointer;transition:background .2s;}
+  .slider:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;background:#fff;border-radius:50%;transition:transform .2s;}
+  .switch input:checked + .slider{background:var(--amber);}
+  .switch input:checked + .slider:before{transform:translateX(16px);}
+  .helptext{font-size:11.5px;color:var(--text-lo);line-height:1.5;margin-top:4px;}
+
+  .mode-switch-row{
+    display:flex;align-items:center;justify-content:space-between;gap:12px;
+    background:var(--bg-1);border:1px solid var(--border-soft);border-radius:10px;
+    padding:12px 14px;margin-bottom:16px;
+  }
+  .mode-switch-row .lbl{font-size:13px;font-weight:500;}
+  .mode-switch-row .sub{font-size:11.5px;color:var(--text-lo);margin-top:2px;}
+  .status-line{
+    display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-mid);
+    margin-top:12px;padding-top:12px;border-top:1px solid var(--border-soft);
+  }
+  .status-dot{width:7px;height:7px;border-radius:50%;background:var(--text-lo);flex-shrink:0;}
+  .status-dot.ok{background:var(--safe);}
+  .status-dot.err{background:var(--danger);}
+
+  .btn{
+    display:inline-flex;align-items:center;justify-content:center;gap:8px;
+    background:var(--bg-2);border:1px solid var(--border);color:var(--text-hi);border-radius:9px;
+    padding:10px 14px;font-size:13px;font-weight:500;cursor:pointer;
+    transition:background .15s, border-color .15s;width:100%;
+  }
+  .btn:hover{background:#1A2340;border-color:var(--amber-dim);}
+  .btn:active{transform:scale(0.98);}
+  .btn.primary{background:var(--amber);border-color:var(--amber);color:#241A02;font-weight:700;}
+  .btn.primary:hover{background:#FFC554;}
+  .btn-row{display:flex;gap:10px;margin-top:6px;}
+
+  .toast-stack{position:fixed;top:20px;right:20px;z-index:1050;display:flex;flex-direction:column;gap:10px;max-width:320px;}
+  .toast{
+    background:#1A0E11;border:1px solid var(--danger);color:var(--text-hi);border-radius:10px;
+    padding:12px 14px;font-size:13px;display:flex;gap:10px;align-items:flex-start;animation:slideIn .25s ease-out;
+  }
+  .toast.info{border-color:var(--border);background:#0F1526;}
+  @keyframes slideIn{from{opacity:0;transform:translateX(20px);}to{opacity:1;transform:translateX(0);}}
+  .toast svg{width:18px;height:18px;flex-shrink:0;color:var(--danger);margin-top:1px;}
+  .toast.info svg{color:var(--text-mid);}
+  .toast b{font-family:'Space Grotesk',sans-serif;}
+
+  footer{margin-top:26px;text-align:center;font-size:11.5px;color:var(--text-lo);}
+  footer a{color:var(--text-mid);}
+</style>
+</head>
+<body>
+<div class="toast-stack" id="toastStack"></div>
+
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="crest">
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--amber)" stroke-width="1.6"><path d="M4 21V9l3-3 3 3V6l2-2 2 2v3l3-3 3 3v12H4z"/><path d="M9 21v-5h2v5M13 21v-5h2v5"/></svg>
+      </div>
+      <div>
+        <h1>Storm Watch</h1>
+        <div class="addr">Castle Fun Center · 109 Brookside Ave, Chester, NY 10918</div>
+      </div>
+    </div>
+    <div class="headmeta">
+      <div class="mode-badge" id="modeBadge"><span class="dot"></span><span id="modeBadgeText">Demo mode — simulated strikes</span></div>
+      <div id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <div id="alertBanner" class="alert-banner clear">
+    <div class="alert-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 6L9 17l-5-5"/></svg>
+    </div>
+    <div class="alert-text">
+      <div class="t1" id="alertT1">All clear</div>
+      <div class="t2" id="alertT2">No lightning detected within 10 miles of the venue.</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div>
+      <div class="panel">
+        <div class="panel-title">
+          <span>Live map — strikes within 30 mi</span>
+          <span id="strikeCount" style="color:var(--text-lo);font-weight:400;text-transform:none;letter-spacing:0;">0 strikes tracked</span>
+        </div>
+        <div class="map-wrap"><div id="map"></div></div>
+        <div class="radar-legend">
+          <span><i class="swatch" style="background:var(--danger)"></i>Within 10 mi</span>
+          <span><i class="swatch" style="background:var(--amber)"></i>10–20 mi</span>
+          <span><i class="swatch" style="background:var(--bolt)"></i>20–30 mi</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Last hour</div>
+        <div class="stat-row">
+          <div class="stat"><div class="n" id="statTotal">0</div><div class="l">TOTAL STRIKES</div></div>
+          <div class="stat"><div class="n" id="statClose">0</div><div class="l">WITHIN 10 MI</div></div>
+          <div class="stat"><div class="n" id="statNearest">—</div><div class="l">NEAREST STRIKE</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel">
+        <div class="panel-title">Data source</div>
+
+        <div class="mode-switch-row">
+          <div>
+            <div class="lbl">Live mode</div>
+            <div class="sub">Off = demo simulator. On = poll your configured API.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="modeToggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+
+        <div class="field">
+          <label for="providerSelect">Provider</label>
+          <select id="providerSelect">
+            <option value="blitzortung">Blitzortung (community)</option>
+            <option value="tomorrow">Tomorrow.io</option>
+            <option value="weatherbit">WeatherBit</option>
+            <option value="custom">Custom REST endpoint</option>
+          </select>
+          <div class="field-note" id="providerNote"></div>
+        </div>
+
+        <div class="field" id="apiKeyField">
+          <label for="apiKeyInput">API key</label>
+          <input type="password" id="apiKeyInput" placeholder="Paste your API key">
+        </div>
+
+        <div class="field" id="endpointField">
+          <label for="endpointInput">Endpoint URL</label>
+          <input type="text" id="endpointInput" placeholder="https://api.example.com/lightning">
+        </div>
+
+        <div class="field" id="pollField">
+          <label for="pollInput">Poll interval (seconds)</label>
+          <input type="number" id="pollInput" value="30" min="10" max="600">
+        </div>
+
+        <div id="mappingFields">
+          <div class="field-note" style="margin-bottom:8px;">Response field mapping — dot-path to each value in one strike record (e.g. <code>coordinates.lat</code>).</div>
+          <div class="field-grid2">
+            <div class="field"><label for="mapRoot">List path</label><input type="text" id="mapRoot" placeholder="data.strikes"></div>
+            <div class="field"><label for="mapTime">Time field</label><input type="text" id="mapTime" placeholder="time"></div>
+          </div>
+          <div class="field-grid2">
+            <div class="field"><label for="mapLat">Latitude field</label><input type="text" id="mapLat" placeholder="lat"></div>
+            <div class="field"><label for="mapLon">Longitude field</label><input type="text" id="mapLon" placeholder="lon"></div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn primary" id="saveApiBtn">Save settings</button>
+          <button class="btn" id="testConnBtn">Test connection</button>
+        </div>
+
+        <div class="status-line">
+          <span class="status-dot" id="statusDot"></span>
+          <span id="statusText">Not connected — running in demo mode.</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">Alert settings</div>
+        <div class="row-between field">
+          <div>
+            <label style="margin-bottom:2px;">Browser notifications</label>
+            <div class="helptext">Alerts you on this device when a strike lands within 10 miles.</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="notifToggle">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="field" style="margin-top:18px;">
+          <label for="emailInput">Email for alerts</label>
+          <input type="email" id="emailInput" placeholder="name@example.com">
+          <div class="helptext" id="emailHelp">Saved on this device only. This demo shows the alert as an in-app/browser notification — sending real email requires connecting a mail service on a backend, which isn't wired up yet.</div>
+        </div>
+        <div class="field">
+          <label for="radiusInput">Alert radius (miles)</label>
+          <input type="number" id="radiusInput" value="10" min="1" max="30">
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" id="saveBtn">Save settings</button>
+          <button class="btn" id="simulateBtn">Simulate strike</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">
+          <span>Strike log</span>
+          <span id="logClearBtn" style="cursor:pointer;color:var(--text-lo);font-weight:400;text-transform:none;letter-spacing:0;font-size:12px;">Clear</span>
+        </div>
+        <div class="log-list" id="logList">
+          <div class="log-empty">No strikes yet. Waiting on the storm cell to move closer.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    Demo data generator simulates a drifting storm cell — not connected to a live lightning feed. Map tiles © OpenStreetMap contributors, © CARTO.<br>
+    Many lightning APIs block direct browser requests (no CORS headers). If live mode reports a connection error, you'll likely need a small server-side proxy that forwards the request and adds your API key.
+  </footer>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const VENUE = { lat: 41.3608, lon: -74.2854, name: "Castle Fun Center" };
+const RADAR_MAX_MI = 30;
+const MI_TO_M = 1609.34;
+const STORAGE_KEY = 'stormwatch_settings_v1';
+
+const PRESETS = {
+  tomorrow: {
+    label: 'Tomorrow.io',
+    endpoint: 'https://api.tomorrow.io/v4/weather/realtime',
+    needsKey: true,
+    mapping: { root: 'data.strikes', lat: 'lat', lon: 'lon', time: 'time' },
+    note: 'Lightning strike data lives under a plan-specific path in Tomorrow.io — update the endpoint and field mapping to match the exact response your plan returns.'
+  },
+  weatherbit: {
+    label: 'WeatherBit',
+    endpoint: 'https://api.weatherbit.io/v2.0/lightning',
+    needsKey: true,
+    mapping: { root: 'data', lat: 'lat', lon: 'lon', time: 'ts' },
+    note: 'Requires a WeatherBit plan with lightning data access. Adjust field mapping to match the JSON WeatherBit returns for your account.'
+  },
+  blitzortung: {
+    label: 'Blitzortung (community)',
+    endpoint: '',
+    needsKey: false,
+    isWebSocket: true,
+    mapping: { root: '', lat: 'lat', lon: 'lon', time: 'time' },
+    note: 'Connects directly to Blitzortung\'s public WebSocket feed — no key or endpoint needed. It\'s a community network with an unofficial, undocumented protocol, so treat it as best-effort: the feed is global (filtered here to strikes within 30 mi of the venue), and Blitzortung asks that heavy users consider running a receiver station rather than just consuming the free feed.'
+  },
+  custom: {
+    label: 'Custom REST endpoint',
+    endpoint: '',
+    needsKey: true,
+    mapping: { root: 'data', lat: 'lat', lon: 'lon', time: 'time' },
+    note: 'Point this at any HTTPS JSON endpoint that returns recent strikes, then set the field mapping below to match its response shape.'
+  }
+};
+
+let settings = {
+  mode: 'demo',
+  provider: 'blitzortung',
+  apiKey: '',
+  endpoint: PRESETS.tomorrow.endpoint,
+  pollSeconds: 30,
+  mapping: { ...PRESETS.blitzortung.mapping },
+  notifEnabled: false,
+  email: '',
+  radius: 10
+};
+
+function loadSettings(){
+  try{
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if(raw){
+      const saved = JSON.parse(raw);
+      settings = { ...settings, ...saved, mapping: { ...settings.mapping, ...(saved.mapping||{}) } };
+    }
+  }catch(e){}
+}
+function persistSettings(){
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); }catch(e){}
+}
+
+let notifPermission = "default";
+let strikes = [];
+const seenStrikeIds = new Set();
+
+const clockEl = document.getElementById('clock');
+const alertBanner = document.getElementById('alertBanner');
+const alertT1 = document.getElementById('alertT1');
+const alertT2 = document.getElementById('alertT2');
+const logList = document.getElementById('logList');
+const toastStack = document.getElementById('toastStack');
+const modeBadge = document.getElementById('modeBadge');
+const modeBadgeText = document.getElementById('modeBadgeText');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+
+// ---- Map setup ----
+const map = L.map('map', { zoomControl: true, attributionControl: true }).setView([VENUE.lat, VENUE.lon], 10);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  subdomains: 'abcd', maxZoom: 19
+}).addTo(map);
+
+[{mi:10,color:'#FF4D5E'},{mi:20,color:'#FFB627'},{mi:30,color:'#6FE3FF'}].forEach(r=>{
+  L.circle([VENUE.lat, VENUE.lon], { radius: r.mi*MI_TO_M, color:r.color, weight:1, opacity:0.5, fill:false, dashArray:'4 6' }).addTo(map);
+});
+
+const venueIcon = L.divIcon({
+  className: '',
+  html: '<div style="width:16px;height:16px;border-radius:50%;background:#FFB627;box-shadow:0 0 0 6px rgba(255,182,39,0.18);border:2px solid #241A02;"></div>',
+  iconSize:[16,16], iconAnchor:[8,8]
+});
+L.marker([VENUE.lat, VENUE.lon], { icon: venueIcon }).addTo(map)
+  .bindPopup('<b>Castle Fun Center</b><br>109 Brookside Ave, Chester, NY');
+
+function destPoint(lat, lon, bearingDeg, distMi){
+  const R = 3958.8;
+  const bearing = bearingDeg * Math.PI/180;
+  const lat1 = lat*Math.PI/180, lon1 = lon*Math.PI/180;
+  const lat2 = Math.asin(Math.sin(lat1)*Math.cos(distMi/R) + Math.cos(lat1)*Math.sin(distMi/R)*Math.cos(bearing));
+  const lon2 = lon1 + Math.atan2(Math.sin(bearing)*Math.sin(distMi/R)*Math.cos(lat1), Math.cos(distMi/R)-Math.sin(lat1)*Math.sin(lat2));
+  return { lat: lat2*180/Math.PI, lon: lon2*180/Math.PI };
+}
+function haversineMi(lat1,lon1,lat2,lon2){
+  const R = 3958.8, toRad = d=>d*Math.PI/180;
+  const dLat = toRad(lat2-lat1), dLon = toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return R * 2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+function bearingBetween(lat1,lon1,lat2,lon2){
+  const toRad = d=>d*Math.PI/180;
+  const y = Math.sin(toRad(lon2-lon1))*Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1))*Math.sin(toRad(lat2)) - Math.sin(toRad(lat1))*Math.cos(toRad(lat2))*Math.cos(toRad(lon2-lon1));
+  return (Math.atan2(y,x)*180/Math.PI + 360) % 360;
+}
+function getPath(obj, path){
+  if(!path) return obj;
+  return path.split('.').reduce((o,k)=> (o && o[k]!==undefined) ? o[k] : undefined, obj);
+}
+
+function colorForDist(mi){
+  if(mi <= settings.radius) return '#FF4D5E';
+  if(mi <= 20) return '#FFB627';
+  return '#6FE3FF';
+}
+function bearingToCompass(deg){
+  const dirs = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+  return dirs[Math.round(deg/22.5)%16];
+}
+
+function plotStrike(mi, bearing, time, realLatLon){
+  const pt = realLatLon || destPoint(VENUE.lat, VENUE.lon, bearing, mi);
+  const color = colorForDist(mi);
+
+  const flash = L.circleMarker([pt.lat, pt.lon], { radius:3, color, fillColor:color, fillOpacity:0.9, weight:0 }).addTo(map);
+  let r = 3, op = 0.85;
+  const grow = setInterval(()=>{
+    r += 2.5; op -= 0.06;
+    flash.setStyle({ opacity: Math.max(op,0), fillOpacity: Math.max(op,0) });
+    flash.setRadius(r);
+    if(op <= 0){ clearInterval(grow); map.removeLayer(flash); }
+  }, 30);
+
+  const bolt = L.divIcon({
+    className:'',
+    html: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="2"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill="${color}" fill-opacity="0.25"/></svg>`,
+    iconSize:[16,16], iconAnchor:[8,8]
+  });
+  const marker = L.marker([pt.lat, pt.lon], { icon: bolt }).addTo(map);
+  marker.bindPopup(`<b>${mi.toFixed(1)} mi</b> ${bearingToCompass(bearing)} of venue<br>${time}`);
+
+  setTimeout(()=>{
+    if(map.hasLayer(marker)){
+      let el = marker.getElement();
+      if(el){ el.style.transition = 'opacity 1s'; el.style.opacity = '0'; }
+      setTimeout(()=> map.removeLayer(marker), 1000);
+    }
+  }, 90000);
+
+  return { lat: pt.lat, lon: pt.lon, marker };
+}
+
+function addLogRow(entry){
+  if(logList.querySelector('.log-empty')) logList.innerHTML = "";
+  const row = document.createElement('div');
+  row.className = 'log-row' + (entry.dist <= settings.radius ? ' close' : '');
+  row.innerHTML = `<span>${entry.time}</span><span>${entry.dir}</span><span class="dist">${entry.dist.toFixed(1)} mi</span>`;
+  row.addEventListener('click', ()=>{
+    if(entry.marker){ map.setView(entry.marker.getLatLng(), 12); entry.marker.openPopup(); }
+  });
+  logList.prepend(row);
+  while(logList.children.length > 25) logList.removeChild(logList.lastChild);
+}
+
+function updateStats(){
+  const now = Date.now();
+  const lastHour = strikes.filter(s => now - s.t < 3600000);
+  document.getElementById('statTotal').textContent = lastHour.length;
+  document.getElementById('statClose').textContent = lastHour.filter(s=>s.dist<=settings.radius).length;
+  document.getElementById('statNearest').textContent = lastHour.length
+    ? Math.min(...lastHour.map(s=>s.dist)).toFixed(1)+' mi' : '—';
+  document.getElementById('strikeCount').textContent = strikes.length + ' strikes tracked';
+}
+
+function setAlertState(active, mi){
+  if(active){
+    alertBanner.className = 'alert-banner danger';
+    alertT1.textContent = 'Lightning within ' + settings.radius + ' miles';
+    alertT2.textContent = 'Nearest strike ' + mi.toFixed(1) + ' mi from the venue. Move activities indoors.';
+  } else {
+    alertBanner.className = 'alert-banner clear';
+    alertT1.textContent = 'All clear';
+    alertT2.textContent = 'No lightning detected within ' + settings.radius + ' miles of the venue.';
+  }
+}
+
+let clearTimer = null;
+function handleNewStrike(mi, bearing, realLatLon){
+  const time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const placed = plotStrike(mi, bearing, time, realLatLon);
+  strikes.push({t:Date.now(), dist:mi, bearing});
+  addLogRow({time, dir: bearingToCompass(bearing), dist: mi, marker: placed.marker});
+  updateStats();
+
+  if(mi <= settings.radius){
+    setAlertState(true, mi);
+    clearTimeout(clearTimer);
+    clearTimer = setTimeout(()=> setAlertState(false), 20000);
+    fireAlert(mi);
+  }
+}
+
+function fireAlert(mi){
+  showToast('Lightning ' + mi.toFixed(1) + ' mi from Castle Fun Center — within your ' + settings.radius + ' mi radius.');
+  if(settings.notifEnabled && notifPermission === 'granted'){
+    try{
+      new Notification('Storm Watch — Castle Fun Center', { body: 'Lightning detected ' + mi.toFixed(1) + ' mi from the venue.' });
+    }catch(e){}
+  }
+}
+
+function showToast(msg, kind){
+  const t = document.createElement('div');
+  t.className = 'toast' + (kind==='info' ? ' info' : '');
+  const icon = kind==='info'
+    ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>'
+    : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>';
+  t.innerHTML = `${icon}<div><b>${kind==='info'?'Storm Watch':'Lightning alert'}</b><br>${msg}</div>`;
+  toastStack.appendChild(t);
+  setTimeout(()=>{ t.style.opacity='0'; t.style.transition='opacity .4s'; setTimeout(()=>t.remove(),400); }, 7000);
+}
+
+// ---- Demo storm cell simulator (always scheduled, only emits in demo mode) ----
+let stormBearing = Math.random()*360;
+let stormDist = 28;
+function tickStorm(){
+  if(settings.mode === 'demo'){
+    stormBearing += (Math.random()-0.5)*10;
+    stormDist += (Math.random()-0.6)*2.2;
+    stormDist = Math.max(1, Math.min(35, stormDist));
+    if(stormDist <= RADAR_MAX_MI){
+      const jBearing = stormBearing + (Math.random()-0.5)*20;
+      const jDist = Math.max(0.3, stormDist + (Math.random()-0.5)*4);
+      handleNewStrike(jDist, (jBearing+360)%360);
+    }
+  }
+  const next = 1800 + Math.random()*2600;
+  setTimeout(tickStorm, next);
+}
+setTimeout(tickStorm, 2000);
+
+// ---- Live polling ----
+function buildLiveUrl(){
+  const p = settings.provider;
+  const base = settings.endpoint;
+  if(!base) return null;
+  const sep = base.includes('?') ? '&' : '?';
+  if(p === 'tomorrow') return `${base}${sep}location=${VENUE.lat},${VENUE.lon}&apikey=${encodeURIComponent(settings.apiKey)}`;
+  if(p === 'weatherbit') return `${base}${sep}lat=${VENUE.lat}&lon=${VENUE.lon}&key=${encodeURIComponent(settings.apiKey)}`;
+  if(p === 'custom') return settings.apiKey ? `${base}${sep}apikey=${encodeURIComponent(settings.apiKey)}` : base;
+  return base;
+}
+
+function setStatus(kind, text){
+  statusText.textContent = text;
+  statusDot.className = 'status-dot' + (kind==='ok' ? ' ok' : kind==='err' ? ' err' : '');
+  if(settings.mode === 'live'){
+    modeBadge.className = 'mode-badge' + (kind==='ok' ? ' live-ok' : kind==='err' ? ' live-err' : '');
+    modeBadgeText.textContent = kind==='ok' ? 'Live — connected' : kind==='err' ? 'Live — connection error' : 'Live — connecting…';
+  }
+}
+
+async function fetchLiveStrikes(){
+  if(settings.provider === 'blitzortung'){
+    setStatus('err', 'Blitzortung needs a WebSocket relay — direct HTTPS polling isn\'t supported from this page.');
+    return;
+  }
+  const url = buildLiveUrl();
+  if(!url){ setStatus('err', 'No endpoint configured. Add one in Data source settings.'); return; }
+  if(PRESETS[settings.provider].needsKey && !settings.apiKey){ setStatus('err', 'This provider needs an API key. Add one in Data source settings.'); return; }
+  try{
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    const arr = getPath(json, settings.mapping.root);
+    if(!Array.isArray(arr)) throw new Error('No strike list found at "' + (settings.mapping.root || '(root)') + '" — check the field mapping');
+    let newCount = 0;
+    arr.forEach(rec=>{
+      const lat = getPath(rec, settings.mapping.lat);
+      const lon = getPath(rec, settings.mapping.lon);
+      const t = getPath(rec, settings.mapping.time);
+      if(typeof lat !== 'number' || typeof lon !== 'number') return;
+      const id = lat.toFixed(4) + ',' + lon.toFixed(4) + ',' + (t || '');
+      if(seenStrikeIds.has(id)) return;
+      seenStrikeIds.add(id);
+      if(seenStrikeIds.size > 800){ seenStrikeIds.clear(); }
+      const dist = haversineMi(VENUE.lat, VENUE.lon, lat, lon);
+      if(dist > RADAR_MAX_MI) return;
+      const bearing = bearingBetween(VENUE.lat, VENUE.lon, lat, lon);
+      handleNewStrike(dist, bearing, { lat, lon });
+      newCount++;
+    });
+    setStatus('ok', 'Connected — last checked ' + new Date().toLocaleTimeString() + (newCount ? ` · ${newCount} new strike${newCount>1?'s':''}` : ' · no new strikes'));
+  }catch(err){
+    setStatus('err', 'Connection failed: ' + err.message + '. Many lightning APIs block direct browser requests (CORS) — you may need a small server-side proxy that adds your key.');
+  }
+}
+
+let liveInterval = null;
+function startLivePolling(){
+  stopLivePolling();
+  fetchLiveStrikes();
+  liveInterval = setInterval(fetchLiveStrikes, Math.max(10, settings.pollSeconds) * 1000);
+}
+function stopLivePolling(){
+  if(liveInterval){ clearInterval(liveInterval); liveInterval = null; }
+}
+
+// ---- Blitzortung WebSocket (community feed, unofficial protocol) ----
+// Messages arrive LZW-compressed as text frames. Decoder ported from the
+// documented algorithm at https://www.gkbrk.com/blitzortung
+function lzwDecode(input){
+  const dict = {};
+  const chars = Array.from(input);
+  let current = chars[0];
+  let prevPhrase = current;
+  const out = [current];
+  const RESET = 256;
+  let nextCode = RESET;
+  for(let i = 1; i < chars.length; i++){
+    const code = chars[i].charCodeAt(0);
+    let phrase;
+    if(RESET > code) phrase = chars[i];
+    else if(dict.hasOwnProperty(code)) phrase = dict[code];
+    else phrase = prevPhrase + current;
+    out.push(phrase);
+    current = phrase[0];
+    dict[nextCode] = prevPhrase + current;
+    nextCode += 1;
+    prevPhrase = phrase;
+  }
+  return out.join('');
+}
+
+const BZ_SERVER_IDS = [1,2,3,4,5,6,7,8];
+let bzServerIdx = 0;
+let bzSocket = null;
+let bzReconnectTimer = null;
+
+function bzUrl(){ return `wss://ws${BZ_SERVER_IDS[bzServerIdx % BZ_SERVER_IDS.length]}.blitzortung.org:3000/`; }
+
+function handleBzRecord(rec){
+  const lat = rec.lat, lon = rec.lon;
+  if(typeof lat !== 'number' || typeof lon !== 'number') return;
+  const id = lat.toFixed(4) + ',' + lon.toFixed(4) + ',' + rec.time;
+  if(seenStrikeIds.has(id)) return;
+  seenStrikeIds.add(id);
+  if(seenStrikeIds.size > 800) seenStrikeIds.clear();
+  const dist = haversineMi(VENUE.lat, VENUE.lon, lat, lon);
+  if(dist > RADAR_MAX_MI) return;
+  const bearing = bearingBetween(VENUE.lat, VENUE.lon, lat, lon);
+  handleNewStrike(dist, bearing, { lat, lon });
+  setStatus('ok', 'Connected to Blitzortung — last nearby strike ' + new Date().toLocaleTimeString());
+}
+
+function connectBlitzortung(){
+  disconnectBlitzortung();
+  const url = bzUrl();
+  setStatus('idle', 'Connecting to Blitzortung (' + url + ')…');
+  let socket;
+  try{ socket = new WebSocket(url); }
+  catch(err){ setStatus('err', 'Could not open WebSocket: ' + err.message); scheduleBzReconnect(); return; }
+  bzSocket = socket;
+  socket.onopen = () => {
+    socket.send(JSON.stringify({ a: 111 }));
+    setStatus('ok', 'Connected to Blitzortung — streaming live strikes worldwide, filtered to 30 mi.');
+  };
+  socket.onmessage = (evt) => {
+    try{
+      const decoded = lzwDecode(evt.data);
+      const rec = JSON.parse(decoded);
+      handleBzRecord(rec);
+    }catch(err){ /* skip malformed frame */ }
+  };
+  socket.onerror = (evt) => {
+    console.error('Blitzortung WebSocket error', evt);
+    setStatus('err', 'Blitzortung WebSocket error — see browser console for details. Retrying on another server…');
+  };
+  socket.onclose = (evt) => {
+    console.warn('Blitzortung WebSocket closed', evt.code, evt.reason);
+    const reason = evt.reason ? `: ${evt.reason}` : '';
+    setStatus('err', `Connection closed (code ${evt.code}${reason}) — retrying on another server…`);
+    if(settings.mode === 'live' && settings.provider === 'blitzortung') scheduleBzReconnect();
+  };
+}
+function scheduleBzReconnect(){
+  clearTimeout(bzReconnectTimer);
+  bzServerIdx += 1;
+  bzReconnectTimer = setTimeout(connectBlitzortung, 4000);
+}
+function disconnectBlitzortung(){
+  clearTimeout(bzReconnectTimer);
+  bzReconnectTimer = null;
+  if(bzSocket){
+    bzSocket.onclose = null;
+    bzSocket.onerror = null;
+    try{ bzSocket.close(); }catch(e){}
+    bzSocket = null;
+  }
+}
+
+function stopLive(){
+  stopLivePolling();
+  disconnectBlitzortung();
+}
+
+function applyMode(){
+  if(settings.mode === 'live'){
+    modeBadge.className = 'mode-badge';
+    modeBadgeText.textContent = 'Live — connecting…';
+    if(settings.provider === 'blitzortung') connectBlitzortung();
+    else startLivePolling();
+  } else {
+    stopLive();
+    modeBadge.className = 'mode-badge';
+    modeBadgeText.textContent = 'Demo mode — simulated strikes';
+    setStatus('idle', 'Not connected — running in demo mode.');
+  }
+}
+
+// ---- Clock ----
+function tickClock(){ clockEl.textContent = new Date().toLocaleTimeString(); }
+setInterval(tickClock, 1000);
+tickClock();
+
+// ---- UI wiring: notifications ----
+const notifToggle = document.getElementById('notifToggle');
+notifToggle.addEventListener('change', async ()=>{
+  if(notifToggle.checked){
+    if(!('Notification' in window)){
+      showToast('This browser does not support notifications.', 'info');
+      notifToggle.checked = false; return;
+    }
+    const perm = await Notification.requestPermission();
+    notifPermission = perm;
+    if(perm !== 'granted'){ notifToggle.checked = false; showToast('Notification permission was not granted.', 'info'); }
+  }
+  settings.notifEnabled = notifToggle.checked;
+  persistSettings();
+});
+
+document.getElementById('saveBtn').addEventListener('click', ()=>{
+  settings.email = document.getElementById('emailInput').value.trim();
+  const r = parseFloat(document.getElementById('radiusInput').value);
+  settings.radius = isNaN(r) ? 10 : Math.max(1, Math.min(30, r));
+  document.getElementById('radiusInput').value = settings.radius;
+  persistSettings();
+  showToast('Alert radius set to ' + settings.radius + ' mi' + (settings.email ? '. Email delivery is not connected in this demo — the address is saved for when a backend mail step is wired up.' : '.'), 'info');
+});
+
+document.getElementById('simulateBtn').addEventListener('click', ()=>{
+  const mi = Math.random()*settings.radius*0.9;
+  const bearing = Math.random()*360;
+  handleNewStrike(mi, bearing);
+});
+
+document.getElementById('logClearBtn').addEventListener('click', ()=>{
+  logList.innerHTML = '<div class="log-empty">No strikes yet. Waiting on the storm cell to move closer.</div>';
+  strikes = [];
+  updateStats();
+});
+
+// ---- UI wiring: data source / provider settings ----
+const providerSelect = document.getElementById('providerSelect');
+const apiKeyField = document.getElementById('apiKeyField');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const endpointInput = document.getElementById('endpointInput');
+const pollInput = document.getElementById('pollInput');
+const providerNote = document.getElementById('providerNote');
+const mapRoot = document.getElementById('mapRoot');
+const mapLat = document.getElementById('mapLat');
+const mapLon = document.getElementById('mapLon');
+const mapTime = document.getElementById('mapTime');
+const modeToggle = document.getElementById('modeToggle');
+
+function refreshProviderUI(){
+  const preset = PRESETS[settings.provider];
+  apiKeyField.style.display = preset.needsKey ? 'block' : 'none';
+  const isWs = !!preset.isWebSocket;
+  document.getElementById('endpointField').style.display = isWs ? 'none' : 'block';
+  document.getElementById('pollField').style.display = isWs ? 'none' : 'block';
+  document.getElementById('mappingFields').style.display = isWs ? 'none' : 'block';
+  providerNote.textContent = preset.note;
+}
+
+function populateFormFromSettings(){
+  providerSelect.value = settings.provider;
+  apiKeyInput.value = settings.apiKey;
+  endpointInput.value = settings.endpoint;
+  pollInput.value = settings.pollSeconds;
+  mapRoot.value = settings.mapping.root;
+  mapLat.value = settings.mapping.lat;
+  mapLon.value = settings.mapping.lon;
+  mapTime.value = settings.mapping.time;
+  modeToggle.checked = settings.mode === 'live';
+  document.getElementById('notifToggle').checked = settings.notifEnabled;
+  document.getElementById('emailInput').value = settings.email;
+  document.getElementById('radiusInput').value = settings.radius;
+  refreshProviderUI();
+}
+
+providerSelect.addEventListener('change', ()=>{
+  const preset = PRESETS[providerSelect.value];
+  endpointInput.value = preset.endpoint;
+  mapRoot.value = preset.mapping.root;
+  mapLat.value = preset.mapping.lat;
+  mapLon.value = preset.mapping.lon;
+  mapTime.value = preset.mapping.time;
+  settings.provider = providerSelect.value;
+  refreshProviderUI();
+});
+
+document.getElementById('saveApiBtn').addEventListener('click', ()=>{
+  settings.provider = providerSelect.value;
+  settings.apiKey = apiKeyInput.value.trim();
+  settings.endpoint = endpointInput.value.trim();
+  const poll = parseInt(pollInput.value, 10);
+  settings.pollSeconds = isNaN(poll) ? 30 : Math.max(10, Math.min(600, poll));
+  pollInput.value = settings.pollSeconds;
+  settings.mapping = {
+    root: mapRoot.value.trim(),
+    lat: mapLat.value.trim() || 'lat',
+    lon: mapLon.value.trim() || 'lon',
+    time: mapTime.value.trim() || 'time'
+  };
+  persistSettings();
+  showToast('Data source settings saved.', 'info');
+  if(settings.mode === 'live') applyMode();
+});
+
+document.getElementById('testConnBtn').addEventListener('click', ()=>{
+  settings.provider = providerSelect.value;
+  settings.apiKey = apiKeyInput.value.trim();
+  settings.endpoint = endpointInput.value.trim();
+  settings.mapping = {
+    root: mapRoot.value.trim(),
+    lat: mapLat.value.trim() || 'lat',
+    lon: mapLon.value.trim() || 'lon',
+    time: mapTime.value.trim() || 'time'
+  };
+  if(settings.provider === 'blitzortung'){
+    setStatus('idle', 'Testing Blitzortung connection…');
+    connectBlitzortung();
+    if(settings.mode !== 'live'){
+      setTimeout(()=>{ if(settings.mode !== 'live') disconnectBlitzortung(); }, 8000);
+    }
+  } else {
+    setStatus('idle', 'Testing connection…');
+    fetchLiveStrikes();
+  }
+});
+
+modeToggle.addEventListener('change', ()=>{
+  const goingLive = modeToggle.checked;
+  if(goingLive){
+    settings.provider = providerSelect.value;
+    settings.apiKey = apiKeyInput.value.trim();
+    settings.endpoint = endpointInput.value.trim();
+    if(PRESETS[settings.provider].needsKey && !settings.apiKey){
+      showToast('Add an API key in Data source settings before switching to live mode.', 'info');
+      modeToggle.checked = false; return;
+    }
+    if(!settings.endpoint && settings.provider !== 'blitzortung'){
+      showToast('Add an endpoint URL in Data source settings before switching to live mode.', 'info');
+      modeToggle.checked = false; return;
+    }
+    settings.mode = 'live';
+  } else {
+    settings.mode = 'demo';
+  }
+  persistSettings();
+  applyMode();
+});
+
+// ---- Init ----
+loadSettings();
+populateFormFromSettings();
+applyMode();
+</script>
+</body>
+</html>
