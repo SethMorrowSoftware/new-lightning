@@ -831,8 +831,37 @@ T::group('Provider error messages');
         . '"The request requires a different account subscription level."},"response":[]}';
     $message = Rest::explainStatus(401, $scope);
     T::ok(stripos($message, 'plan does not cover') !== false, 'a scope failure is named as a plan problem');
-    T::ok(stripos($message, 'lightning/flash') !== false, 'and points at the endpoint the free tier does include');
+    T::ok(stripos($message, 'lightning flash') !== false, 'and points at the endpoint with the widest availability');
     T::ok(stripos($message, 'Check the ID and secret') === false, 'without blaming the credentials, which were accepted');
+
+    // "Your plan does not cover this endpoint" is useless without saying which
+    // endpoint. Which one it was also decides whether the advice is "switch
+    // endpoints" or "this account has no lightning data at all".
+    $plain = Rest::explainStatus(401, $scope, 'https://data.api.xweather.com/lightning/closest?p=1,2');
+    T::ok(stripos($plain, 'lightning/closest') !== false, 'the failing endpoint is quoted back');
+    T::ok(stripos($plain, 'Try the "lightning flash" option') !== false, 'the plain endpoint is told to try flash');
+
+    $flash = Rest::explainStatus(401, $scope, 'https://data.api.xweather.com/lightning/flash/closest?p=1,2');
+    T::ok(stripos($flash, 'no change of endpoint will fix it') !== false, 'a scope failure on flash is called unfixable by endpoint');
+    T::ok(stripos($flash, 'Blitzortung') !== false, 'and offers the free sources instead');
+    T::ok(stripos($flash, 'Try the "lightning flash" option') === false, 'without suggesting the endpoint already in use');
+
+    // The endpoint URL carries the client ID and secret, so quoting it back
+    // would put both on screen and into the log.
+    $withCreds = 'https://data.api.xweather.com/lightning/flash/closest?p=1,2'
+        . '&client_id=AbCdEf123&client_secret=SuPerSecret456';
+    $redacted = Rest::redactUrl($withCreds);
+    T::ok(strpos($redacted, 'SuPerSecret456') === false, 'the client secret is stripped from a quoted URL');
+    T::ok(strpos($redacted, 'AbCdEf123') === false, 'the client id is stripped too');
+    T::ok(strpos($redacted, 'p=1,2') !== false, 'non-secret parameters survive redaction');
+    T::ok(strpos($redacted, 'lightning/flash/closest') !== false, 'and the path — the whole point — survives');
+    T::ok(strpos(Rest::explainStatus(401, $scope, $withCreds), 'SuPerSecret456') === false, 'no secret reaches the message');
+    T::ok(
+        strpos(Rest::redactUrl('https://x.test/a?apikey=zzz&token=yyy&other=keep'), 'zzz') === false
+        && strpos(Rest::redactUrl('https://x.test/a?apikey=zzz&token=yyy&other=keep'), 'yyy') === false
+        && strpos(Rest::redactUrl('https://x.test/a?apikey=zzz&token=yyy&other=keep'), 'keep') !== false,
+        'single-key and bearer-style parameters are redacted as well'
+    );
 
     $bad = '{"success":false,"error":{"code":"invalid_client","description":"Invalid client id."}}';
     T::ok(stripos(Rest::explainStatus(401, $bad), 'rejected the credentials') !== false, 'a bad client id is named as a credential problem');
