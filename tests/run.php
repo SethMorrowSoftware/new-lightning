@@ -727,6 +727,60 @@ T::group('Closing time honours a mute');
     T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
 }
 
+T::group('Legible on a wall display');
+{
+    // This page is read off a screen behind the counter, from ten feet away,
+    // by someone deciding whether to clear the go-kart track. Text that is
+    // merely decorative elsewhere is operational here.
+    $css = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+
+    $luminance = static function (string $hex): float {
+        $hex = ltrim($hex, '#');
+        $channel = static function (float $v): float {
+            $v /= 255;
+            return $v <= 0.03928 ? $v / 12.92 : (($v + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * $channel((float) hexdec(substr($hex, 0, 2)))
+            + 0.7152 * $channel((float) hexdec(substr($hex, 2, 2)))
+            + 0.0722 * $channel((float) hexdec(substr($hex, 4, 2)));
+    };
+    $contrast = static function (string $a, string $b) use ($luminance): float {
+        $la = $luminance($a);
+        $lb = $luminance($b);
+        return (max($la, $lb) + 0.05) / (min($la, $lb) + 0.05);
+    };
+    $token = static function (string $name) use ($css): ?string {
+        return preg_match('/--' . preg_quote($name, '/') . ':\s*(#[0-9A-Fa-f]{6})/', $css, $m) === 1 ? $m[1] : null;
+    };
+
+    $panel = $token('panel');
+    T::ok($panel !== null, 'the panel background colour is readable from the stylesheet');
+
+    if ($panel !== null) {
+        foreach (['text-hi', 'text-mid', 'text-lo'] as $name) {
+            $colour = $token($name);
+            T::ok(
+                $colour !== null && $contrast($colour, $panel) >= 4.5,
+                sprintf(
+                    '--%s meets WCAG AA against the panel (%.2f:1)',
+                    $name,
+                    $colour !== null ? $contrast($colour, $panel) : 0
+                )
+            );
+        }
+    }
+
+    // The banner's second line is the one that says what to do about it.
+    if (preg_match('/\.alert-text \.t2\{[^}]*font-size:([0-9.]+)px/', $css, $m) === 1) {
+        T::ok(
+            (float) $m[1] >= 14.0,
+            sprintf('the banner\'s instruction line is at least 14px (%.1fpx)', (float) $m[1])
+        );
+    } else {
+        T::ok(false, 'the banner instruction line has a font size to check');
+    }
+}
+
 T::group('An alert nobody could deliver is not counted as sent');
 {
     // The decision is recorded before delivery is attempted — that is what
