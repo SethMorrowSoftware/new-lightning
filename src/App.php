@@ -29,15 +29,33 @@ final class App
 
         try {
             self::migrateIfNeeded();
+            // Read the settings here too, so a database that fails halfway
+            // through lands on the page below rather than part-way down a
+            // rendered dashboard.
+            Settings::all();
         } catch (\Throwable $e) {
-            self::fail('The database is not reachable: ' . $e->getMessage(), $json);
+            // The driver's own words name the database, the user and the host
+            // it tried — "Access denied for user 'venue_sw'@'localhost'" — and
+            // this page is reached before anyone has signed in. Keep the detail
+            // for the error log, where the operator can get at it.
+            error_log('[stormwatch] database unreachable: ' . $e->getMessage());
+            self::fail(
+                'The database is not reachable, so Storm Watch cannot start. The details are in the PHP error log '
+                . '(data/php-error.log on a standard install). Lightning alerts are not being sent until this is fixed.',
+                $json
+            );
         }
 
         if (Auth::userCount() === 0) {
             self::notInstalled($json);
         }
 
-        Http::startSession();
+        // A token-authenticated JSON endpoint identifies its caller from the
+        // token, so opening a session only leaves a file behind — once a
+        // minute, for ever, on a host with a shared /tmp.
+        if (!($json && $access === 'public')) {
+            Http::startSession();
+        }
 
         if ($access === 'auth') {
             $json ? Auth::requireApiLogin() : Auth::requireLogin();
@@ -64,12 +82,27 @@ final class App
      */
     public static function hasKioskToken(): bool
     {
+        return self::activeKioskToken() !== null;
+    }
+
+    /**
+     * The kiosk token on this request, when it is the real one.
+     *
+     * Returned rather than merely checked because the dashboard has to hand it
+     * on. A kiosk viewer has no session, and the page it is shown is only the
+     * shell — every number on it arrives from api/state.php a few seconds
+     * later. If the token does not travel with those polls they are refused,
+     * and the wall display gives up and shows a login form instead of the
+     * weather.
+     */
+    public static function activeKioskToken(): ?string
+    {
         $provided = (string) ($_GET['kiosk'] ?? $_SERVER['HTTP_X_KIOSK_TOKEN'] ?? '');
         if ($provided === '') {
-            return false;
+            return null;
         }
         $expected = Settings::getString('kiosk_token');
-        return $expected !== '' && hash_equals($expected, $provided);
+        return ($expected !== '' && hash_equals($expected, $provided)) ? $provided : null;
     }
 
     /**

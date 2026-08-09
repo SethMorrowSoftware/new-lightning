@@ -179,6 +179,8 @@ final class Rest
         $records = [];
         $skipped = 0;
         $stale = 0;
+        $positioned = 0;      // records whose latitude and longitude read cleanly
+        $unreadableTime = 0;  // ...of which the time field could not be read
         foreach ($list as $item) {
             if (!is_array($item)) {
                 $skipped++;
@@ -196,7 +198,12 @@ final class Rest
                 $skipped++;
                 continue;
             }
-            $timestamp = Ingest::parseTimestamp(Ingest::dotPath($item, $timePath), $timeFormat);
+            $positioned++;
+            $rawTime = Ingest::dotPath($item, $timePath);
+            if (!Ingest::isReadableTimestamp($rawTime, $timeFormat)) {
+                $unreadableTime++;
+            }
+            $timestamp = Ingest::parseTimestamp($rawTime, $timeFormat);
 
             // Some endpoints happily return history. Storing it would raise an
             // alert for a storm that finished hours ago.
@@ -206,6 +213,26 @@ final class Rest
             }
 
             $records[] = ['lat' => $lat, 'lon' => $lon, 'ts' => $timestamp];
+        }
+
+        // A time path pointing at the wrong key reads as nothing for every
+        // record, and every record is then stamped "now" — so an endpoint that
+        // serves history delivers all of it as strikes happening this minute,
+        // and the venue is cleared for a storm that ended last week. One record
+        // missing a timestamp is a data quirk; all of them is a mapping error,
+        // and it has to be said rather than silently invented around.
+        if ($positioned > 0 && $unreadableTime === $positioned) {
+            return self::failure(
+                sprintf(
+                    'The time field "%s" could not be read on any of the %d record%s returned, so there is no way to '
+                    . 'tell a strike from this minute from one last week. Check the time path against the response '
+                    . 'shape — "Verify the mapping" below prints a real record. Nothing was stored.',
+                    $timePath === '' ? '(root)' : $timePath,
+                    $positioned,
+                    $positioned === 1 ? '' : 's'
+                ),
+                $status
+            );
         }
 
         if ($records === [] && $list !== []) {
@@ -418,15 +445,20 @@ final class Rest
     private static function substitute(string $url, ?float $atLat = null, ?float $atLon = null): string
     {
         $radius = self::requestRadiusMi();
+        // The ISO forms need escaping: gmdate('c') ends in "+00:00", and a
+        // literal "+" in a query string is a space by the time the endpoint
+        // reads it. The offset is silently lost, so the request asks about a
+        // different hour than intended — or is rejected outright. The numeric
+        // and coordinate values are plain digits and need nothing.
         return strtr($url, [
             '{lat}' => (string) ($atLat ?? Settings::getFloat('venue_lat')),
             '{lon}' => (string) ($atLon ?? Settings::getFloat('venue_lon')),
             '{radius_mi}' => (string) $radius,
             '{radius_km}' => (string) round($radius * Geo::MILES_TO_KM, 3),
             '{now}' => (string) time(),
-            '{now_iso}' => gmdate('c'),
+            '{now_iso}' => rawurlencode(gmdate('c')),
             '{since}' => (string) (time() - 3600),
-            '{since_iso}' => gmdate('c', time() - 3600),
+            '{since_iso}' => rawurlencode(gmdate('c', time() - 3600)),
         ]);
     }
 
@@ -547,10 +579,25 @@ final class Rest
     {
         if (function_exists('curl_init')) {
             $received = [];
+            // Stop reading at the cap rather than truncating afterwards: a
+            // misconfigured or hostile endpoint streaming hundreds of megabytes
+            // would otherwise exhaust the memory limit and kill the cron run
+            // that was meant to be watching for lightning.
+            $body = '';
+            $overLimit = false;
             $ch = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
-                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$overLimit): int {
+                    $length = strlen($chunk);
+                    if (strlen($body) + $length > self::MAX_BODY_BYTES) {
+                        $overLimit = true;
+                        return 0;   // a short write aborts the transfer
+                    }
+                    $body .= $chunk;
+                    return $length;
+                },
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_MAXREDIRS => 3,
                 CURLOPT_TIMEOUT => self::TIMEOUT,
@@ -568,11 +615,19 @@ final class Rest
                     return strlen($line);
                 },
             ]);
-            $body = curl_exec($ch);
+            curl_exec($ch);
             $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
             $error = curl_errno($ch) !== 0 ? curl_error($ch) : null;
             curl_close($ch);
-            return [is_string($body) ? substr($body, 0, self::MAX_BODY_BYTES) : '', $status, $error, $received];
+            if ($overLimit) {
+                // The abort surfaces as a write error; say what it really was.
+                $error = sprintf(
+                    'The endpoint returned more than %d MB, which is far more than a list of recent strikes. '
+                    . 'Check the endpoint URL and any limit parameter on it.',
+                    (int) (self::MAX_BODY_BYTES / (1024 * 1024))
+                );
+            }
+            return [$body, $status, $error, $received];
         }
 
         if (!ini_get('allow_url_fopen')) {
@@ -588,7 +643,16 @@ final class Rest
                 'user_agent' => 'StormWatch/' . SW_VERSION,
             ],
         ]);
-        $body = @file_get_contents($url, false, $context, 0, self::MAX_BODY_BYTES);
+
+        // The context's 'timeout' bounds a single read, not the call. An
+        // endpoint dribbling a byte every few seconds satisfies it for ever,
+        // and file_get_contents would sit there — holding the tick lock, so
+        // every later cron minute skips out at the lock and never re-evaluates
+        // the alert state. On a REST feed that is the whole alerting path
+        // stopped by one slow server. Read it ourselves against a wall clock.
+        $startedAt = microtime(true);
+        $handle = @fopen($url, 'rb', false, $context);
+
         $status = 0;
         $received = [];
         foreach ($http_response_header ?? [] as $header) {
@@ -601,10 +665,43 @@ final class Rest
                 $received[strtolower(trim($parts[0]))] = trim($parts[1]);
             }
         }
-        if ($body === false) {
+
+        if ($handle === false) {
             return ['', $status, 'The request could not be completed.', $received];
         }
-        return [$body, $status, null, $received];
+
+        stream_set_timeout($handle, 5);
+        $body = '';
+        $timedOut = false;
+        while (!feof($handle)) {
+            if ((microtime(true) - $startedAt) > self::TIMEOUT) {
+                $timedOut = true;
+                break;
+            }
+            $chunk = fread($handle, 65536);
+            if ($chunk === false || $chunk === '') {
+                $meta = stream_get_meta_data($handle);
+                if (!empty($meta['timed_out'])) {
+                    $timedOut = true;
+                }
+                break;
+            }
+            $body .= $chunk;
+            if (strlen($body) >= self::MAX_BODY_BYTES) {
+                break;
+            }
+        }
+        fclose($handle);
+
+        if ($timedOut) {
+            return [
+                '',
+                $status,
+                sprintf('The endpoint did not finish answering within %d seconds.', self::TIMEOUT),
+                $received,
+            ];
+        }
+        return [substr($body, 0, self::MAX_BODY_BYTES), $status, null, $received];
     }
 
     /**

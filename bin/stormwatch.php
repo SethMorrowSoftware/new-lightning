@@ -41,7 +41,20 @@ if (!Config::isInstalled()) {
     exit(1);
 }
 
-App::migrateIfNeeded();
+// The README points people here when the dashboard is unhappy, so this is
+// often the first thing run on a broken install. An uncaught PDO exception
+// would print nothing at all and exit 255 — the least useful possible answer
+// to "why has it stopped".
+try {
+    App::migrateIfNeeded();
+    Settings::all();
+} catch (\Throwable $e) {
+    fwrite(STDERR, "Storm Watch cannot reach its database.\n");
+    fwrite(STDERR, '  ' . $e->getMessage() . "\n");
+    fwrite(STDERR, "Check the credentials in config/config.php, and that data/ is writable.\n");
+    fwrite(STDERR, "Lightning alerts are not being sent while this is true.\n");
+    exit(1);
+}
 
 $command = $argv[1] ?? 'status';
 $args = array_slice($argv, 2);
@@ -131,6 +144,15 @@ switch ($command) {
     case 'set':
         if (count($args) < 2) {
             out('Usage: php bin/stormwatch.php set <key> <value>');
+            exit(1);
+        }
+        // Settings::put() ignores keys it does not recognise, which is right
+        // for a posted form and wrong here: "set alert_radius_MI 4" would
+        // report success, change nothing, and leave the venue on a radius
+        // nobody meant.
+        if (!array_key_exists($args[0], Settings::schema())) {
+            out('Unknown setting: ' . $args[0]);
+            out('Run "php bin/stormwatch.php get" to list the settings that exist.');
             exit(1);
         }
         $errors = Settings::put([$args[0] => implode(' ', array_slice($args, 1))]);

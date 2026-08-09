@@ -20,6 +20,10 @@ App::boot('view', true);
 $sinceId = isset($_GET['since_id']) ? max(0, (int) $_GET['since_id']) : null;
 $markerTtl = max(60, Settings::getInt('marker_ttl_minutes') * 60);
 
+// Read the high-water mark before the strike list, not after: a worker
+// inserting in between would otherwise be counted as "already sent".
+$highWaterBefore = Strikes::maxId();
+
 if ($sinceId === null) {
     // First load: everything still worth drawing on the map, oldest first so
     // the client can render in chronological order.
@@ -29,7 +33,9 @@ if ($sinceId === null) {
 }
 
 $payload = [];
+$highestSent = 0;
 foreach ($strikes as $strike) {
+    $highestSent = max($highestSent, (int) $strike['id']);
     $payload[] = [
         'id' => (int) $strike['id'],
         'ts' => (int) $strike['struck_at'],
@@ -48,7 +54,11 @@ $status = Runner::status();
 Http::json([
     'ok' => true,
     'server_time' => time(),
-    'max_id' => Strikes::maxId(),
+    // The client resumes from this, so it has to be the last strike actually
+    // handed over — never the newest in the table. Both queries above are
+    // capped at 400 rows, and during the storm that fills them is exactly when
+    // the map must not quietly skip the rest.
+    'max_id' => $highestSent > 0 ? $highestSent : $highWaterBefore,
     'state' => AlertEngine::publicState(),
     'strikes' => $payload,
     'stats' => [

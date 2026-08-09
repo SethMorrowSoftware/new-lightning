@@ -187,6 +187,18 @@ T::group('Timestamp and path parsing');
     T::ok(abs(Ingest::parseTimestamp(null) - $now) < 2, 'a missing timestamp falls back to now');
     T::ok(abs(Ingest::parseTimestamp('not a date') - $now) < 2, 'an unparseable timestamp falls back to now');
 
+    // That fallback is safe for one record and dangerous for all of them: it
+    // is what turns a wrong time mapping into an endpoint's whole history
+    // arriving as strikes happening this minute. Rest::fetch tells the two
+    // apart with this.
+    T::ok(Ingest::isReadableTimestamp(1700000000, 'auto'), 'epoch seconds read cleanly');
+    T::ok(Ingest::isReadableTimestamp('2023-11-14T22:13:20Z', 'auto'), 'ISO-8601 text reads cleanly');
+    T::ok(Ingest::isReadableTimestamp('1700000000', 'epoch_s'), 'a numeric string reads cleanly');
+    T::ok(!Ingest::isReadableTimestamp(null, 'auto'), 'a missing field does not');
+    T::ok(!Ingest::isReadableTimestamp('', 'auto'), 'nor an empty one');
+    T::ok(!Ingest::isReadableTimestamp('not a date', 'auto'), 'nor unparseable text');
+    T::ok(!Ingest::isReadableTimestamp(0, 'auto'), 'nor a zero epoch');
+
     $document = ['data' => ['strikes' => [['coords' => ['lat' => 1.5, 'lon' => 2.5]]]]];
     T::same(1.5, Ingest::dotPath($document, 'data.strikes.0.coords.lat'), 'dot path with a numeric segment');
     T::ok(is_array(Ingest::dotPath($document, 'data.strikes')), 'dot path to a list');
@@ -623,6 +635,394 @@ T::group('Alert cooldown');
     $applyCooldown(30);
 }
 
+T::group('A storm that has been all-cleared stays closed');
+{
+    // The lookback for "is there lightning about" is the cooldown period, and
+    // the cooldown is a setting. Lengthening it must not reach back over a
+    // storm that is finished and already all-cleared.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'cooldown_scope' => 'alert', 'notify_all_clear' => true,
+    ]);
+
+    // An afternoon storm, run to its all clear.
+    placeStrike(5.0, 33.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'the afternoon storm alerts');
+    Database::instance()->run('UPDATE strikes SET struck_at = ?, received_at = ?', [time() - 8400, time() - 8400]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'and is all-cleared once it is over');
+    Database::instance()->run('UPDATE alert_state SET notified_at = ? WHERE id = 1', [time() - 6600]);
+
+    // Hours later, under a clear sky, the operator wants a longer hold.
+    Settings::put(['all_clear_minutes' => 240]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'a longer cooldown does not revive a finished storm');
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'and does not alert on it a second time');
+
+    // A genuinely new strike still gets through immediately.
+    placeStrike(6.0, 210.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'a real strike still alerts under the longer hold');
+
+    // A strike that merely reached us late is new information, not history:
+    // it struck before the last all clear but arrived after it.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30]);
+    Database::instance()->run(
+        'UPDATE alert_state SET notified_level = ?, notified_at = ? WHERE id = 1',
+        ['clear', time() - 60]
+    );
+    $late = placeStrike(4.0, 250.0, 15 * 60);   // struck 15 min ago, arriving now
+    T::ok($late !== null, 'the late strike is stored');
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'a late-arriving strike still raises the alert');
+
+    Settings::put(['all_clear_minutes' => 30]);
+}
+
+T::group('Clearing the strike log resets the announcement too');
+{
+    // The button says it resets the alert state. If it left "a warning has been
+    // announced" behind, the next tick would find a warning with no strikes
+    // under it and post an all clear drawn from an empty table.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30, 'notify_all_clear' => true]);
+    placeStrike(4.0, 88.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'a warning is live');
+
+    Strikes::deleteAll();
+    AlertEngine::reset();
+    AlertEngine::evaluate();
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'clearing the log does not broadcast an all clear');
+    T::same('clear', AlertEngine::publicState()['level'], 'and the state is back to a standing start');
+
+    placeStrike(4.0, 89.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'the next strike alerts normally');
+}
+
+T::group('Closing time honours a mute');
+{
+    // Mute is the one setting that governs everything reaching Slack and
+    // email. Closing time is not an exception to it.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30, 'notify_all_clear' => true]);
+    placeStrike(4.0, 200.0);
+    AlertEngine::evaluate();
+    AlertEngine::mute(30);
+
+    AlertEngine::standDownForClosedHours();
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no stand-down is posted while muted');
+    T::ok(count(Events::recent(200, 'alert.stand_down')) >= 1, 'but it is recorded in the log');
+
+    // Un-muted, the same stand-down is announced.
+    resetData();
+    placeStrike(4.0, 201.0);
+    AlertEngine::evaluate();
+    AlertEngine::unmute();
+    AlertEngine::standDownForClosedHours();
+    T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
+}
+
+T::group('Legible on a wall display');
+{
+    // This page is read off a screen behind the counter, from ten feet away,
+    // by someone deciding whether to clear the go-kart track. Text that is
+    // merely decorative elsewhere is operational here.
+    $css = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+
+    $luminance = static function (string $hex): float {
+        $hex = ltrim($hex, '#');
+        $channel = static function (float $v): float {
+            $v /= 255;
+            return $v <= 0.03928 ? $v / 12.92 : (($v + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * $channel((float) hexdec(substr($hex, 0, 2)))
+            + 0.7152 * $channel((float) hexdec(substr($hex, 2, 2)))
+            + 0.0722 * $channel((float) hexdec(substr($hex, 4, 2)));
+    };
+    $contrast = static function (string $a, string $b) use ($luminance): float {
+        $la = $luminance($a);
+        $lb = $luminance($b);
+        return (max($la, $lb) + 0.05) / (min($la, $lb) + 0.05);
+    };
+    $token = static function (string $name) use ($css): ?string {
+        return preg_match('/--' . preg_quote($name, '/') . ':\s*(#[0-9A-Fa-f]{6})/', $css, $m) === 1 ? $m[1] : null;
+    };
+
+    $panel = $token('panel');
+    T::ok($panel !== null, 'the panel background colour is readable from the stylesheet');
+
+    if ($panel !== null) {
+        foreach (['text-hi', 'text-mid', 'text-lo'] as $name) {
+            $colour = $token($name);
+            T::ok(
+                $colour !== null && $contrast($colour, $panel) >= 4.5,
+                sprintf(
+                    '--%s meets WCAG AA against the panel (%.2f:1)',
+                    $name,
+                    $colour !== null ? $contrast($colour, $panel) : 0
+                )
+            );
+        }
+    }
+
+    // The banner's second line is the one that says what to do about it.
+    if (preg_match('/\.alert-text \.t2\{[^}]*font-size:([0-9.]+)px/', $css, $m) === 1) {
+        T::ok(
+            (float) $m[1] >= 14.0,
+            sprintf('the banner\'s instruction line is at least 14px (%.1fpx)', (float) $m[1])
+        );
+    } else {
+        T::ok(false, 'the banner instruction line has a font size to check');
+    }
+}
+
+T::group('An alert nobody could deliver is not counted as sent');
+{
+    // The decision is recorded before delivery is attempted — that is what
+    // stops two overlapping cron runs sending the same alert twice. It also
+    // means a Slack outage during the one storm of the summer would file the
+    // warning as announced and never mention it again.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'notify_all_clear' => true,
+    ]);
+    // A Slack channel that is switched on and cannot possibly deliver. The
+    // secret goes in first: the cross-field rules refuse to enable a webhook
+    // with no URL behind it, which is the whole save rejected.
+    Settings::putRaw('slack_webhook_url', 'https://hooks.slack.example.invalid/services/nope');
+    T::same([], Settings::put(['slack_enabled' => true, 'slack_mode' => 'webhook']), 'the channel saves');
+
+    T::ok(SlackNotifier::isEnabled(), 'the failing channel counts as enabled');
+
+    placeStrike(4.0, 44.0);
+    AlertEngine::evaluate();
+    T::ok(count(Events::recent(200, 'slack.failed')) >= 1, 'the delivery failure is logged');
+    T::ok(count(Events::recent(200, 'alert.undelivered')) >= 1, 'and the alert is marked as held, not sent');
+
+    $state = AlertEngine::state();
+    T::same(null, $state['notified_level'], 'the announcement is rolled back so the next run retries');
+
+    // The storm is still going, so the retry has something to announce. Switch
+    // the broken channel off — as an operator would once they saw the log —
+    // and the held warning goes out on the next tick rather than being lost.
+    // (No live endpoint is contacted: this suite must not depend on one.)
+    Settings::put(['slack_enabled' => false]);
+    $before = count(Events::recent(200, 'alert.warning'));
+    AlertEngine::evaluate();
+    T::ok(
+        count(Events::recent(200, 'alert.warning')) > $before,
+        'the held warning is announced again on the next run rather than lost'
+    );
+    T::same(
+        'warning',
+        (string) AlertEngine::state()['notified_level'],
+        'and stays announced once it has been'
+    );
+
+    Settings::putRaw('slack_webhook_url', '');
+}
+
+T::group('The dashboard reports whether a channel works, not whether it is on');
+{
+    // A revoked token, or a bot removed from its channel, leaves the switch on.
+    // A green tick over that is how nobody finds out until the storm.
+    resetData();
+    Settings::putRaw('slack_webhook_url', 'https://hooks.slack.com/services/T0/B0/x');
+    Settings::put(['slack_enabled' => true, 'slack_mode' => 'webhook']);
+
+    $delivery = Runner::status()['delivery'];
+    T::same([], $delivery, 'a channel that has never been used reports nothing either way');
+
+    Events::log('slack.sent', Events::SEVERITY_INFO, 'Delivered: Posted to #ops.', []);
+    $delivery = Runner::status()['delivery'];
+    T::ok(isset($delivery['slack']) && $delivery['slack']['ok'] === true, 'a delivered alert reads healthy');
+
+    Events::log('slack.failed', Events::SEVERITY_ERROR, 'Delivery failed: The bot is not a member of that channel.', []);
+    $delivery = Runner::status()['delivery'];
+    T::ok(isset($delivery['slack']) && $delivery['slack']['ok'] === false, 'a rejected alert reads unhealthy');
+    T::ok(
+        isset($delivery['slack']) && strpos($delivery['slack']['message'], 'not a member') !== false,
+        'and carries the reason the channel gave'
+    );
+    T::ok(Runner::status()['slack_ready'], 'while the channel is still reported as configured');
+
+    Settings::put(['slack_enabled' => false]);
+    Settings::putRaw('slack_webhook_url', '');
+    resetData();
+}
+
+T::group('An address that cannot be written to is refused, not dropped');
+{
+    // The mailer discards anything that will not validate. Accepting a typo
+    // here means an address that is never written to and never mentioned
+    // again, while the dashboard goes on reporting email ready.
+    Settings::put(['email_enabled' => false]);
+    $errors = Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'stormwatch@example.com',
+        'email_to' => 'ops@example.com, manager@example, gm@example.com',
+    ]);
+    T::ok(isset($errors['email_to']), 'a malformed recipient is refused');
+    T::ok(
+        isset($errors['email_to']) && strpos($errors['email_to'], 'manager@example') !== false,
+        'and the message names the address that is wrong'
+    );
+
+    $errors = Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'not-an-address',
+        'email_to' => 'ops@example.com',
+    ]);
+    T::ok(isset($errors['email_from']), 'a malformed "from" address is refused too');
+
+    T::same([], Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'stormwatch@example.com',
+        'email_to' => 'ops@example.com, gm@example.com',
+    ]), 'a good pair saves');
+    T::ok(\StormWatch\Notifiers\EmailNotifier::isEnabled(), 'and email reports ready');
+
+    // Nothing deliverable means not ready, whatever the switch says.
+    Settings::putRaw('email_to', 'nobody@, also-bad');
+    Settings::flushCache();
+    T::ok(!\StormWatch\Notifiers\EmailNotifier::isEnabled(),
+        'a list of nothing but typos does not report ready');
+
+    Settings::putRaw('email_to', '');
+    Settings::put(['email_enabled' => false]);
+}
+
+T::group('Attributing a request to an address');
+{
+    // Behind a proxy, X-Forwarded-For is a list and only its last entry was
+    // written by the proxy — everything left of it is whatever the client
+    // typed. Trusting the leftmost made the sign-in throttle both useless
+    // (a fresh forged address every attempt) and a weapon (eight attempts
+    // carrying the duty manager's address lock the duty manager out).
+    $saved = $_SERVER;
+    $withProxy = static function (bool $trusted, ?string $header, string $remote): string {
+        Config::override(['trusted_proxy' => $trusted]);
+        $_SERVER['REMOTE_ADDR'] = $remote;
+        if ($header === null) {
+            unset($_SERVER['HTTP_X_FORWARDED_FOR']);
+        } else {
+            $_SERVER['HTTP_X_FORWARDED_FOR'] = $header;
+        }
+        return \StormWatch\Http::clientIp();
+    };
+
+    T::same('198.51.100.7', $withProxy(false, '203.0.113.9', '198.51.100.7'),
+        'without a trusted proxy the header is ignored entirely');
+    T::same('10.0.0.7', $withProxy(true, '203.0.113.9, 198.51.100.4, 10.0.0.7', '172.16.0.1'),
+        'with one, the address the proxy wrote is used, not the one the client sent');
+    T::same('198.51.100.4', $withProxy(true, '203.0.113.9, 198.51.100.4, not-an-ip', '172.16.0.1'),
+        'a junk final entry falls back to the next real one');
+    T::same('172.16.0.1', $withProxy(true, 'garbage', '172.16.0.1'),
+        'an unusable header falls back to the connecting address');
+    T::same('172.16.0.1', $withProxy(true, null, '172.16.0.1'),
+        'and so does a missing one');
+
+    $_SERVER = $saved;
+    Config::override(['trusted_proxy' => false]);
+}
+
+T::group('Correcting the venue coordinates re-measures the strikes');
+{
+    // Distance is worked out once, when a strike arrives, and stored. So a
+    // mistyped coordinate does not just move the map pin — it leaves every
+    // strike on record measured from the wrong place, and the alert engine
+    // goes on holding a warning for lightning nowhere near the real venue.
+    resetData();
+    Settings::put([
+        'venue_lat' => 41.3608, 'venue_lon' => -74.2854,
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'notify_all_clear' => true,
+    ]);
+
+    placeStrike(5.0, 90.0);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'a strike 5 mi from the entered location alerts');
+
+    // The real venue is about 17 miles north — outside the alert radius, still
+    // inside the display radius.
+    $corrected = Geo::destination(41.3608, -74.2854, 0.0, 17.0);
+    $errors = Settings::put(['venue_lat' => $corrected['lat'], 'venue_lon' => $corrected['lon']]);
+    T::same([], $errors, 'the corrected coordinates save');
+
+    $stored = Database::instance()->first('SELECT distance_mi FROM strikes ORDER BY id DESC LIMIT 1');
+    T::ok(
+        $stored !== null && (float) $stored['distance_mi'] > 10.0,
+        'the stored strike is re-measured against the new location'
+    );
+
+    AlertEngine::evaluate();
+    T::same('watch', AlertEngine::publicState()['level'], 'and the warning stands down to a watch');
+
+    Settings::put(['venue_lat' => 41.3608, 'venue_lon' => -74.2854]);
+}
+
+T::group('Settings never quietly fall back to the shipped defaults');
+{
+    // The defaults put the venue at the demo coordinates and the provider on
+    // the simulator, which fabricates strikes. Answering with them because a
+    // query failed would invent a storm at somebody else's address. The live
+    // behaviour needs a real config file, so smoke.sh drives that; this pins
+    // down why it matters.
+    $defaults = Settings::defaults();
+    T::same('simulator', $defaults['provider'], 'the default provider is the one that fabricates strikes');
+    T::same(41.3608, $defaults['venue_lat'], 'and the default venue is the shipped demo location');
+}
+
+T::group('Housekeeping cannot cause a false all clear');
+{
+    // The cooldown is decided by asking the strikes table "has anything struck
+    // inside the radius in the last N minutes?". Prune the table faster than
+    // that and the answer becomes "nothing on record" — which reads exactly
+    // like "nothing happened", and the venue is told it is safe to go back out
+    // while the storm is still overhead.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 120, 'cooldown_scope' => 'alert', 'notify_all_clear' => true,
+        'marker_ttl_minutes' => 60,
+    ]);
+    Settings::putRaw('retention_hours', 1);   // deliberately shorter than the cooldown
+
+    placeStrike(5.0, 15.0);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'a nearby strike raises the warning');
+
+    // 70 minutes later: past the 1-hour retention, well short of the 2-hour hold.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (70 * 60)]);
+    Strikes::prune();
+    T::same(1, Strikes::stats(86400)['total'], 'prune keeps a strike the cooldown is still counting');
+
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'the hold survives a prune mid-storm');
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no all clear is invented from a pruned table');
+
+    // Past the cooldown, the all clear is real and the row can go.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (200 * 60)]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'the all clear still arrives once the hold expires');
+    T::ok(Strikes::prune() > 0, 'and the strike is prunable once nothing needs it');
+
+    // The operator is told rather than silently given a longer history.
+    Settings::putRaw('retention_hours', 72);
+    $errors = Settings::put(['all_clear_minutes' => 120, 'retention_hours' => 1]);
+    T::ok(isset($errors['all_clear_minutes']) || isset($errors['retention_hours']),
+        'a history shorter than the cooldown is refused with an explanation');
+
+    T::same([], Settings::put(['all_clear_minutes' => 30, 'retention_hours' => 72]),
+        'a sensible pair still saves');
+}
+
 T::group('Operating hours');
 {
     Settings::put([
@@ -759,6 +1159,22 @@ T::group('Adaptive polling');
     Settings::put(['rest_poll_seconds' => 60, 'rest_active_poll_seconds' => 600]);
     T::same(60, Runner::restPollInterval(), 'a misconfigured active cadence never slows things down');
     Settings::put(['rest_poll_seconds' => 300, 'rest_active_poll_seconds' => 60]);
+    resetData();
+
+    // The browser relay records its deliveries under the same 'poll' job name
+    // as the REST poller. A relay tab left open after switching to a REST feed
+    // must not be able to answer "we polled a moment ago" on its behalf — that
+    // starves the real feed while the dashboard reports the relay's success.
+    Settings::putRaw('provider', 'rest');
+    Runner::recordRun('poll', 'rest', true, 0, 'REST poll', time() - 600);
+    Runner::recordRun('poll', 'relay', true, 1, 'Browser relay delivered 1 record(s).', time());
+
+    $restRun = Runner::lastRun('poll', 'rest');
+    T::ok($restRun !== null && $restRun['provider'] === 'rest', 'the REST run is found past a newer relay run');
+    T::same('REST poll', Runner::status()['source_message'], 'feed health reports the REST feed, not the relay');
+
+    Database::instance()->run('DELETE FROM runs');
+    Settings::putRaw('provider', 'simulator');
     resetData();
 }
 
@@ -1014,6 +1430,103 @@ T::group('Simulator');
     $single = Simulator::singleStrike(3.0);
     T::ok($single !== null, 'a single strike can be placed on demand');
     T::near(3.0, (float) $single['distance_mi'], 0.05, 'the requested distance is honoured');
+}
+
+T::group('Email delivery over SMTP');
+{
+    // The alert email is what reaches people who are not watching Slack, and
+    // the SMTP client that sends it is hand-rolled. Drive it against something
+    // that answers like a mail server.
+    $sendVia = static function (string $mode, array $recipients): array {
+        $port = random_int(21000, 39000);
+        $transcript = sys_get_temp_dir() . '/sw-smtp-' . $port . '.json';
+        @unlink($transcript);
+        $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $process = proc_open(
+            sprintf(
+                '%s %s %d %s %s',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(__DIR__ . '/support/smtp_server.php'),
+                $port,
+                escapeshellarg($transcript),
+                escapeshellarg($mode)
+            ),
+            $descriptors,
+            $pipes
+        );
+        if (!is_resource($process)) {
+            return ['result' => ['ok' => false, 'message' => 'server would not start'], 'seen' => []];
+        }
+        stream_set_blocking($pipes[1], true);
+        if (trim((string) fgets($pipes[1])) !== 'READY') {
+            proc_close($process);
+            return ['result' => ['ok' => false, 'message' => 'server did not come up'], 'seen' => []];
+        }
+
+        Settings::putRaw('email_transport', 'smtp');
+        Settings::putRaw('smtp_host', '127.0.0.1');
+        Settings::putRaw('smtp_port', $port);
+        Settings::putRaw('smtp_secure', 'none');
+        Settings::putRaw('smtp_user', 'alerts@example.com');
+        Settings::putRaw('smtp_pass', 'a-secret');
+        Settings::putRaw('email_from', 'stormwatch@example.com');
+        Settings::putRaw('email_from_name', 'Storm Watch');
+
+        $result = \StormWatch\Notifiers\Mailer::send(
+            $recipients,
+            'Lightning within 10 mi of Castle Fun Center',
+            "A strike has been detected inside the alert radius.\n.a line starting with a dot",
+            '<p>A strike has been detected.</p>'
+        );
+        proc_close($process);
+
+        return [
+            'result' => $result,
+            'seen' => json_decode((string) @file_get_contents($transcript), true) ?: [],
+        ];
+    };
+
+    $good = $sendVia('ok', ['ops@example.com', 'manager@example.com']);
+    T::ok($good['result']['ok'] === true, 'a straightforward send succeeds');
+    T::same(['ops@example.com', 'manager@example.com'], $good['seen']['accepted'] ?? [], 'both recipients are offered');
+    T::ok(strpos((string) ($good['seen']['body'] ?? ''), 'Subject:') !== false, 'the message carries its headers');
+    // The parts are base64, so prove the text survived the transport intact
+    // rather than eyeballing it: an off-by-one in the DATA framing or the
+    // dot-stuffing would corrupt this.
+    $wire = preg_replace('/\s+/', '', (string) ($good['seen']['body'] ?? '')) ?? '';
+    $expected = preg_replace('/\s+/', '', base64_encode(
+        "A strike has been detected inside the alert radius.\n.a line starting with a dot"
+    )) ?? '';
+    T::ok(strpos($wire, $expected) !== false, 'the plain-text body arrives byte for byte');
+    T::ok(
+        in_array('AUTH LOGIN', $good['seen']['commands'] ?? [], true),
+        'the client authenticates with LOGIN when the server offers it'
+    );
+
+    // One dud address — a typo, or someone who has left — must not stop the
+    // people whose addresses are fine from being told about the storm.
+    $partial = $sendVia('reject-one', ['ops@example.com', 'bad@example.com', 'manager@example.com']);
+    T::ok($partial['result']['ok'] === true, 'a refused recipient does not fail the whole send');
+    T::same(
+        ['ops@example.com', 'manager@example.com'],
+        $partial['seen']['accepted'] ?? [],
+        'the good addresses still receive the alert'
+    );
+    T::ok(!empty($partial['seen']['body']), 'the message body is actually transmitted');
+    T::ok(
+        strpos($partial['result']['message'], 'bad@example.com') !== false,
+        'and the operator is told which address was refused'
+    );
+
+    // A server that only speaks PLAIN must not lock the venue out of email.
+    $plain = $sendVia('auth-plain', ['ops@example.com']);
+    T::ok($plain['result']['ok'] === true, 'a PLAIN-only server is still usable');
+    T::ok(
+        count(array_filter($plain['seen']['commands'] ?? [], static fn(string $c): bool => strpos($c, 'AUTH PLAIN') === 0)) > 0,
+        'the client falls back to AUTH PLAIN when LOGIN is not offered'
+    );
+
+    Settings::putRaw('email_transport', 'mail');
 }
 
 T::group('WebSocket client');

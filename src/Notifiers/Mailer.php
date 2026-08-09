@@ -59,19 +59,31 @@ final class Mailer
         $body = self::multipartBody($boundary, $text, $html);
 
         $failed = [];
+        $sent = 0;
         foreach ($recipients as $recipient) {
-            if (!@mail($recipient, self::encodeHeader($subject), $body, $headers, '-f' . $from)) {
-                $failed[] = $recipient;
+            if (@mail($recipient, self::encodeHeader($subject), $body, $headers, '-f' . $from)) {
+                $sent++;
+                continue;
             }
+            $failed[] = $recipient;
         }
-        if ($failed !== []) {
+        // Reporting a total failure because one address was rejected would hide
+        // the fact that the rest of the venue was told.
+        if ($sent === 0) {
             return [
                 'ok' => false,
-                'message' => 'PHP mail() refused these recipients: ' . implode(', ', $failed)
+                'message' => 'PHP mail() refused every recipient: ' . implode(', ', $failed)
                     . '. Shared hosts often require the "from" address to be a real mailbox on the same domain.',
             ];
         }
-        return ['ok' => true, 'message' => sprintf('Handed %d message(s) to the local mail server.', count($recipients))];
+        return [
+            'ok' => true,
+            'message' => sprintf(
+                'Handed %d message(s) to the local mail server.%s',
+                $sent,
+                $failed === [] ? '' : ' It refused these addresses, which did not receive it: ' . implode(', ', $failed) . '.'
+            ),
+        ];
     }
 
     /**
@@ -113,30 +125,48 @@ final class Mailer
         try {
             self::expect($socket, 220);
             $ehloName = self::ehloName();
-            self::command($socket, 'EHLO ' . $ehloName, 250);
+            $greeting = self::command($socket, 'EHLO ' . $ehloName, 250);
 
             if ($secure === 'tls') {
                 self::command($socket, 'STARTTLS', 220);
                 if (!@stream_socket_enable_crypto($socket, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) {
                     throw new \RuntimeException('STARTTLS negotiation failed.');
                 }
-                self::command($socket, 'EHLO ' . $ehloName, 250);
+                // The capability list before STARTTLS is not the one that
+                // counts; servers commonly advertise AUTH only once encrypted.
+                $greeting = self::command($socket, 'EHLO ' . $ehloName, 250);
             }
 
             if ($user !== '') {
-                try {
-                    self::command($socket, 'AUTH LOGIN', 334);
-                    self::command($socket, base64_encode($user), 334);
-                    self::command($socket, base64_encode($pass), 235);
-                } catch (\RuntimeException $e) {
-                    throw new \RuntimeException('SMTP authentication failed: ' . $e->getMessage());
-                }
+                self::authenticate($socket, $greeting, $user, $pass);
             }
 
             self::command($socket, 'MAIL FROM:<' . $from . '>', 250);
+
+            // One dud address must not silence the alert for everybody else.
+            // A departed employee's mailbox, or a typo nobody noticed, is
+            // exactly how an email channel dies quietly — the server rejects
+            // that one recipient, the client gives up before DATA, and the
+            // people whose addresses were fine never hear about the storm.
+            $accepted = [];
+            $refused = [];
             foreach ($recipients as $recipient) {
-                self::command($socket, 'RCPT TO:<' . $recipient . '>', [250, 251]);
+                try {
+                    self::command($socket, 'RCPT TO:<' . $recipient . '>', [250, 251]);
+                    $accepted[] = $recipient;
+                } catch (\RuntimeException $e) {
+                    $refused[] = $recipient;
+                }
             }
+            if ($accepted === []) {
+                throw new \RuntimeException(sprintf(
+                    'The server refused every recipient (%s). Check the addresses, and that the "from" address is a '
+                    . 'real mailbox on this domain.',
+                    implode(', ', $refused)
+                ));
+            }
+            $recipients = $accepted;
+
             self::command($socket, 'DATA', 354);
 
             $boundary = 'sw-' . bin2hex(random_bytes(12));
@@ -163,7 +193,50 @@ final class Mailer
         }
 
         @fclose($socket);
-        return ['ok' => true, 'message' => sprintf('Sent to %d recipient(s) via %s.', count($recipients), $host)];
+        return [
+            'ok' => true,
+            'message' => sprintf(
+                'Sent to %d recipient(s) via %s.%s',
+                count($recipients),
+                $host,
+                $refused === [] ? '' : sprintf(
+                    ' The server refused %d address(es), which did not receive it: %s.',
+                    count($refused),
+                    implode(', ', $refused)
+                )
+            ),
+        ];
+    }
+
+    /**
+     * Authenticate with whichever mechanism the server actually offers.
+     *
+     * LOGIN is what most shared hosts present, but PLAIN-only servers exist and
+     * refusing to speak it would fail every alert email with nothing but an
+     * authentication error to go on.
+     *
+     * @param resource $socket
+     */
+    private static function authenticate($socket, string $greeting, string $user, string $pass): void
+    {
+        $advertises = static function (string $mechanism) use ($greeting): bool {
+            return (bool) preg_match('/^250[ -]AUTH\b[^\r\n]*\b' . $mechanism . '\b/mi', $greeting);
+        };
+        // Default to LOGIN when the server lists neither — some announce
+        // nothing useful and accept it anyway.
+        $useLogin = $advertises('LOGIN') || !$advertises('PLAIN');
+
+        try {
+            if ($useLogin) {
+                self::command($socket, 'AUTH LOGIN', 334);
+                self::command($socket, base64_encode($user), 334);
+                self::command($socket, base64_encode($pass), 235);
+                return;
+            }
+            self::command($socket, 'AUTH PLAIN ' . base64_encode("\0" . $user . "\0" . $pass), 235);
+        } catch (\RuntimeException $e) {
+            throw new \RuntimeException('SMTP authentication failed: ' . $e->getMessage());
+        }
     }
 
     private static function multipartBody(string $boundary, string $text, string $html): string
@@ -193,12 +266,42 @@ final class Mailer
         return sprintf('%s <%s>', self::encodeHeader($name), $from);
     }
 
+    /**
+     * RFC 2047 encoded-words for a header that is not plain ASCII.
+     *
+     * The limit is 75 characters per word including the delimiters, and a
+     * venue name with accents in it passes that easily. A single over-long
+     * word is not merely untidy: strict servers fold it themselves, in the
+     * middle of base64, and the subject arrives as mojibake — on the one
+     * message somebody needed to read at a glance.
+     */
     private static function encodeHeader(string $value): string
     {
         if (preg_match('/^[\x20-\x7E]*$/', $value)) {
             return $value;
         }
-        return '=?UTF-8?B?' . base64_encode($value) . '?=';
+
+        // 75 less "=?UTF-8?B?" and "?=", rounded down to a multiple of 4 so
+        // each word is whole base64; that is 12 raw bytes per group of 16.
+        $chunk = 45;
+        $words = [];
+        $buffer = '';
+        foreach (mb_str_split($value, 1, 'UTF-8') as $character) {
+            // Split on characters, never inside one, or the decoded halves are
+            // invalid UTF-8 on their own.
+            if (strlen($buffer . $character) > $chunk) {
+                $words[] = '=?UTF-8?B?' . base64_encode($buffer) . '?=';
+                $buffer = '';
+            }
+            $buffer .= $character;
+        }
+        if ($buffer !== '') {
+            $words[] = '=?UTF-8?B?' . base64_encode($buffer) . '?=';
+        }
+
+        // Folded with CRLF + space, which is how a decoder is told to join
+        // adjacent encoded-words without inserting a space between them.
+        return implode("\r\n ", $words);
     }
 
     private static function ehloName(): string

@@ -16,9 +16,18 @@ use StormWatch\Geo;
 use StormWatch\Http;
 use StormWatch\Ingest;
 use StormWatch\Runner;
+use StormWatch\Schedule;
 use StormWatch\Settings;
 
 App::boot('public', true);
+
+// A batch that raises an alert dispatches Slack and email from inside this
+// request. Both talk to remote servers that can be slow, and the default web
+// execution limit is shorter than a stalled SMTP handshake — the alert would
+// be cut off half-sent. Give it room, keep a ceiling, and finish even if the
+// relay tab navigates away mid-post.
+@set_time_limit(60);
+ignore_user_abort(true);
 
 if (!Http::isPost()) {
     Http::jsonError('This endpoint expects a POST request.', 405);
@@ -66,25 +75,54 @@ foreach ($items as $item) {
 $startedAt = time();
 $stored = Ingest::recordMany($records, 'relay');
 
-if ($stored > 0) {
+// Operating hours govern every path that can raise an alert, not only cron.
+// A relay tab left running overnight keeps posting strikes; without this check
+// each batch raises a warning, tick() stands it down a minute later as
+// "outside monitored hours", and the next batch raises it again — a warning
+// and an all clear every minute until morning. The strikes are still stored,
+// so the map and the history are complete either way.
+$monitoring = Schedule::isMonitoring();
+if ($stored > 0 && $monitoring) {
     AlertEngine::evaluate();
 }
 
-// Record the run so the dashboard's source status reflects relay activity.
-if ($stored > 0 || $records !== []) {
-    Runner::recordRun(
-        'poll',
-        'relay',
-        true,
-        $stored,
-        sprintf('Browser relay delivered %d record(s); stored %d.', count($records), $stored),
-        $startedAt
-    );
-}
+// Always record the run, including an empty check-in. Lightning within thirty
+// miles happens a few days a month, so "strikes have arrived recently" cannot
+// tell a working relay from a tab somebody closed — and it is the tab closing
+// that stops the alerts. The check-in is the liveness signal.
+//
+// But the tab being open is not the same as the feed being connected: a
+// firewall that starts dropping port 3000 leaves the page up and reconnecting
+// for ever while it collects nothing. So the relay reports whether its socket
+// is actually open, and that is what health is recorded as. An older script
+// that does not send the flag is taken at its word only when it has delivered
+// strikes, which is proof enough on its own.
+$connected = array_key_exists('connected', $body)
+    ? (bool) $body['connected']
+    : ($records !== []);
+
+Runner::recordRun(
+    'poll',
+    'relay',
+    $connected,
+    $stored,
+    $records === []
+        ? ($connected
+            ? 'Browser relay checked in; connected, no strikes within the display radius.'
+            : 'Browser relay checked in, but its connection to Blitzortung is down and it is collecting nothing.')
+        : sprintf(
+            'Browser relay delivered %d record(s); stored %d.%s',
+            count($records),
+            $stored,
+            $monitoring ? '' : ' Outside operating hours, so no alert was raised.'
+        ),
+    $startedAt
+);
 
 Http::json([
     'ok' => true,
     'received' => count($records),
     'stored' => $stored,
+    'monitoring' => $monitoring,
     'state' => AlertEngine::publicState(),
 ]);

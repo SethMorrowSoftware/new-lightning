@@ -7,7 +7,10 @@
   --border:#232C48; --border-soft:#1B2440;
   --amber:#FFB627; --amber-dim:#8A6A21;
   --bolt:#6FE3FF; --danger:#FF4D5E; --safe:#4ADE9C;
-  --text-hi:#F3F5FA; --text-mid:#9AA4C0; --text-lo:#5C6483;
+  /* --text-lo was #5C6483: 2.97:1 on the panel background, under the 4.5:1
+     minimum, and it carries the feed-health lines somebody squints at to
+     decide whether to trust the page. Lifted to 4.6:1. */
+  --text-hi:#F3F5FA; --text-mid:#9AA4C0; --text-lo:#858DAB;
   --font-display:'Space Grotesk',system-ui,sans-serif;
   --font-body:'Inter',system-ui,-apple-system,sans-serif;
   --font-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
@@ -124,7 +127,10 @@ h2{font-family:var(--font-display);font-size:17px;font-weight:700;margin:0 0 6px
 .alert-banner.clear .t1{color:var(--safe);}
 .alert-banner.watch .t1{color:var(--amber);}
 .alert-banner.warning .t1{color:var(--danger);}
-.alert-text .t2{font-size:12.5px;color:var(--text-mid);margin-top:2px;}
+/* The line that says what to do — 'move activities indoors and hold for the
+   all clear' — is read off a wall display from across the room, so it does
+   not get to be the smallest and faintest text on the page. */
+.alert-text .t2{font-size:15px;color:var(--text-hi);opacity:.92;margin-top:3px;line-height:1.45;}
 .alert-actions{display:flex;gap:8px;flex-shrink:0;}
 .alert-actions .btn{width:auto;padding:8px 12px;font-size:12px;}
 

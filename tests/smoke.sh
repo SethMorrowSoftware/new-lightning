@@ -37,8 +37,17 @@ status_is() { # status_is <expected> <actual> <description>
 
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
+  # One group deliberately makes data/ unreadable to simulate a dead database.
+  # Interrupt the run there and the restore below cannot put the developer's
+  # own installation back, so undo it before anything else touches the path.
+  chmod 755 "${ROOT}/data" 2>/dev/null
+  if [ -f "${WORK}/stashed.sqlite" ] && [ ! -f "${ROOT}/data/stormwatch.sqlite" ]; then
+    mv "${WORK}/stashed.sqlite" "${ROOT}/data/stormwatch.sqlite" 2>/dev/null
+  fi
   # Put back any installation that was here before the test ran.
-  rm -f "${ROOT}/public/smoke-slow-probe.php"
+  rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php" \
+        "${ROOT}/public/smoke-echo.php" "${ROOT}/public/smoke-huge.php" \
+        "${ROOT}/public/smoke-drip.php"
   rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
   if [ -d "${WORK}/backup-data" ]; then mv "${WORK}/backup-data" "${ROOT}/data"; fi
   if [ -f "${WORK}/backup-config.php" ]; then mv "${WORK}/backup-config.php" "${ROOT}/config/config.php"; fi
@@ -126,6 +135,30 @@ if grep -q 'circle(.*)\.getBounds()' "${ROOT}/public/assets/js/dashboard.js"; th
 else
   green "the map is fitted without projecting a detached circle through the map"
 fi
+
+# More static checks on the browser code, for the same reason: the PHP suite
+# cannot execute it, and each of these is a way the page has gone quiet while
+# still looking healthy.
+if grep -q 'function (response) { clearTimeout(timer); return response; }' "${ROOT}/public/assets/js/dashboard.js"; then
+  red "the poll deadline covers the response body, not just the headers"
+else
+  green "the poll deadline covers the response body, not just the headers"
+fi
+if grep -q 'state.pollTimer = null;' "${ROOT}/public/assets/js/dashboard.js"; then
+  red "polling slows down in a hidden tab rather than stopping"
+else
+  green "polling slows down in a hidden tab rather than stopping"
+fi
+contains "${ROOT}/public/assets/js/dashboard.js" "Object.keys(state.markers).forEach" \
+  "marker expiry walks the markers, so the capped strike list cannot strand any"
+contains "${ROOT}/public/assets/js/dashboard.js" "state.clockOffset" \
+  "strike expiry uses the server clock, not the kiosk's"
+contains "${ROOT}/public/assets/js/dashboard.js" "rejected the last alert" \
+  "the alert-channel line reports delivery, not just configuration"
+contains "${ROOT}/public/assets/js/relay.js" "connected: isConnected()" \
+  "the relay reports whether its feed is actually connected"
+contains "${ROOT}/public/assets/js/relay.js" "if (posting) return;" \
+  "the relay sends one batch at a time, so a failing host is not flooded"
 
 DASHV=$(grep -o 'js/dashboard\.js?v=[^"]*' "${WORK}/dash.html" | head -1 | sed 's/.*v=//')
 check "dashboard.js is versioned by the file itself, not a fixed number (v=${DASHV})" \
@@ -318,11 +351,210 @@ code=$(curl -s -o "${WORK}/ingest.json" -w '%{http_code}' -H 'Content-Type: appl
 status_is 200 "$code" "ingest accepts the right token"
 contains "${WORK}/ingest.json" '"stored":1' "only the strike inside the display radius is stored"
 
+# The relay posts from a browser tab that nobody closes at night. Outside the
+# venue's hours those strikes must still be stored — the map and history stay
+# complete — but they must not raise an alert, or the tab and the cron job
+# take turns raising and standing down a warning every minute until morning.
+group "Relay ingest respects operating hours"
+countAlerts() { # the log is shared with the rest of the suite, so compare a delta
+  php -r '
+  require "'"${ROOT}"'/src/bootstrap.php";
+  use StormWatch\Events;
+  echo count(array_filter(Events::recent(500, "alert."), static fn($r) => $r["type"] !== "alert.suppressed"));
+  '
+}
+ALERTS_BEFORE=$(countAlerts)
+
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\{Settings,Schedule};
+$c = [];
+foreach (Schedule::DAYS as $d) { $c[$d] = ["closed" => true, "open" => "12:00", "close" => "22:00"]; }
+Settings::putRaw("monitor_schedule_enabled", true);
+Settings::putRaw("monitor_schedule", json_encode($c));
+' >/dev/null 2>&1
+
+for i in 1 2 3; do
+  curl -s -o "${WORK}/ingest-closed.json" -H 'Content-Type: application/json' \
+    -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+    -d '{"strikes":[{"lat":41.3'"${i}"'5,"lon":-74.29,"time":'"$(date +%s)"'}]}' \
+    "${BASE}/api/ingest.php"
+done
+contains "${WORK}/ingest-closed.json" '"monitoring":false' "ingest reports that the venue is closed"
+contains "${WORK}/ingest-closed.json" '"stored":1' "strikes are still recorded while closed"
+
+# Lightning within thirty miles happens a few days a month, so "a strike
+# arrived recently" cannot tell a working relay from a tab somebody closed.
+# An empty check-in is the liveness signal, and it must be accepted and
+# recorded.
+code=$(curl -s -o "${WORK}/ingest-beat.json" -w '%{http_code}' -H 'Content-Type: application/json' \
+  -H "X-Ingest-Token: ${INGEST_TOKEN}" -d '{"strikes":[]}' "${BASE}/api/ingest.php")
+status_is 200 "$code" "an empty relay check-in is accepted"
+contains "${WORK}/ingest-beat.json" '"stored":0' "and stores nothing"
+
+# The tab being open is not the feed being connected. A relay whose socket is
+# down checks in faithfully and collects nothing; calling that healthy paints
+# a green badge over a storm nobody is watching.
+curl -s -o /dev/null -H 'Content-Type: application/json' -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+  -d '{"strikes":[],"connected":false}' "${BASE}/api/ingest.php"
+DOWN=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Settings::putRaw("provider", "relay");
+$s = StormWatch\Runner::status();
+echo json_encode(["healthy" => $s["source_healthy"], "message" => $s["source_message"]]);
+')
+case "$DOWN" in
+  *'"healthy":false'*) green "a relay tab that cannot reach the feed reads unhealthy" ;;
+  *)                   red "a relay tab that cannot reach the feed reads unhealthy (got: ${DOWN})" ;;
+esac
+case "$DOWN" in
+  *"cannot reach Blitzortung"*) green "and the message says the connection is the problem" ;;
+  *)                            red "and the message says the connection is the problem (got: ${DOWN})" ;;
+esac
+
+curl -s -o /dev/null -H 'Content-Type: application/json' -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+  -d '{"strikes":[],"connected":true}' "${BASE}/api/ingest.php"
+
+BEAT=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Runner::lastRun("poll", "relay");
+echo $r === null ? "none" : $r["message"];
+')
+case "$BEAT" in
+  *"checked in"*) green "the check-in is recorded as relay liveness" ;;
+  *)              red "the check-in is recorded as relay liveness (got: ${BEAT})" ;;
+esac
+
+# With the relay selected and a fresh check-in, the dashboard must read healthy
+# even though no lightning has been seen.
+HEALTH=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Settings::putRaw("provider", "relay");
+$s = StormWatch\Runner::status();
+echo json_encode(["healthy" => $s["source_healthy"], "message" => $s["source_message"]]);
+')
+case "$HEALTH" in
+  *'"healthy":true'*) green "a checked-in relay reads healthy during calm weather" ;;
+  *)                  red "a checked-in relay reads healthy during calm weather (got: ${HEALTH})" ;;
+esac
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
+
+
+ALERTS_AFTER=$(countAlerts)
+check "no alert is dispatched while the venue is closed (${ALERTS_BEFORE} before, ${ALERTS_AFTER} after)" \
+  "$([ "$ALERTS_BEFORE" = "$ALERTS_AFTER" ] && echo 0 || echo 1)"
+
+php "${ROOT}/bin/stormwatch.php" set monitor_schedule_enabled 0 >/dev/null 2>&1
+
+# A wall display signs in with a token in its URL rather than a session. The
+# page is only a shell — every number on it arrives from api/state.php — so the
+# token has to travel with those polls too, or the display renders once and
+# then bounces to a login form.
+group "Kiosk display"
+KIOSK_TOKEN=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+echo StormWatch\Settings::getString("kiosk_token");
+')
+KIOSKJAR="${WORK}/kiosk.txt"
+code=$(curl -s -o "${WORK}/kiosk.html" -w '%{http_code}' -c "$KIOSKJAR" -b "$KIOSKJAR" \
+  "${BASE}/index.php?kiosk=${KIOSK_TOKEN}")
+status_is 200 "$code" "the kiosk link opens the dashboard without signing in"
+contains "${WORK}/kiosk.html" "api/state.php?kiosk=${KIOSK_TOKEN}" "the polling URL carries the kiosk token"
+
+# Drive the exact URL the page just told the browser to poll.
+POLL=$(grep -o '"stateUrl":"[^"]*"' "${WORK}/kiosk.html" | head -1 | sed 's/.*"stateUrl":"//;s/"$//')
+code=$(curl -s -o "${WORK}/kiosk-state.json" -w '%{http_code}' -c "$KIOSKJAR" -b "$KIOSKJAR" "${BASE}${POLL}")
+status_is 200 "$code" "the kiosk display can actually poll for state"
+contains "${WORK}/kiosk-state.json" '"ok":true' "the kiosk poll returns live state"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/state.php?kiosk=wrong")
+status_is 401 "$code" "a wrong kiosk token is still refused"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"mute","minutes":30}' "${BASE}/api/action.php?kiosk=${KIOSK_TOKEN}")
+check "a kiosk token cannot perform operator actions (got HTTP ${code})" \
+  "$([ "$code" = "401" ] || [ "$code" = "419" ] && echo 0 || echo 1)"
+
+# The client resumes polling from max_id, so max_id must be the last strike
+# actually handed over. Both queries behind this endpoint stop at 400 rows,
+# and the storm that fills them is exactly when the map must not skip the rest.
+group "The map does not skip strikes during a busy storm"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\{Database, Settings, Strikes, Geo};
+Settings::putRaw("display_radius_mi", 30);
+Settings::putRaw("marker_ttl_minutes", 60);
+Database::instance()->run("DELETE FROM strikes");
+$lat = Settings::getFloat("venue_lat"); $lon = Settings::getFloat("venue_lon");
+// Comfortably more than the 400-row page the endpoint serves.
+for ($i = 0; $i < 460; $i++) {
+    $p = Geo::destination($lat, $lon, fmod($i * 0.7919, 360.0), 2 + (($i * 7) % 25));
+    Strikes::record($p["lat"], $p["lon"], time() - ($i % 30), "smoke");
+}
+echo (int) Database::instance()->value("SELECT COUNT(*) FROM strikes");
+' > "${WORK}/seeded.txt" 2>/dev/null
+STORED=$(cat "${WORK}/seeded.txt")
+check "the storm is larger than one page (${STORED} strikes stored)" \
+  "$([ "$STORED" -gt "400" ] && echo 0 || echo 1)"
+
+# Walk the incremental path the dashboard uses, from the beginning.
+SEEN=0
+CURSOR=0
+for _ in 1 2 3 4 5; do
+  curl -s -o "${WORK}/page.json" -c "$JAR" -b "$JAR" "${BASE}/api/state.php?since_id=${CURSOR}"
+  read -r COUNT NEXT <<EOF2
+$(php -r '
+$d = json_decode(file_get_contents($argv[1]), true);
+echo count($d["strikes"]), " ", $d["max_id"];' "${WORK}/page.json")
+EOF2
+  SEEN=$((SEEN + COUNT))
+  [ "$COUNT" = "0" ] && break
+  CURSOR="$NEXT"
+done
+
+check "paging through delivers every strike (${SEEN} of ${STORED})" \
+  "$([ "$SEEN" = "$STORED" ] && echo 0 || echo 1)"
+check "and the cursor ends on the last strike (${CURSOR})" \
+  "$([ -n "$CURSOR" ] && [ "$CURSOR" != "0" ] && echo 0 || echo 1)"
+
+php -r 'require "'"${ROOT}"'/src/bootstrap.php"; StormWatch\Database::instance()->run("DELETE FROM strikes");' 2>/dev/null
+
+group "Public dashboard is read only"
+# The ingest token is a write credential. A public dashboard is read only.
+php "${ROOT}/bin/stormwatch.php" set provider relay >/dev/null 2>&1
+php "${ROOT}/bin/stormwatch.php" set dashboard_public 1 >/dev/null 2>&1
+PUBJAR="${WORK}/pub.txt"
+curl -s -o "${WORK}/public-dash.html" -c "$PUBJAR" -b "$PUBJAR" "${BASE}/index.php"
+contains "${WORK}/public-dash.html" "Live map" "a public dashboard renders for an anonymous visitor"
+if grep -qF "${INGEST_TOKEN}" "${WORK}/public-dash.html"; then
+  red "the ingest token is not handed to an anonymous visitor"
+else
+  green "the ingest token is not handed to an anonymous visitor"
+fi
+curl -s -o "${WORK}/kiosk-relay.html" "${BASE}/index.php?kiosk=${KIOSK_TOKEN}"
+contains "${WORK}/kiosk-relay.html" "${INGEST_TOKEN}" "but the venue's own kiosk display still gets it"
+php "${ROOT}/bin/stormwatch.php" set dashboard_public 0 >/dev/null 2>&1
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
+
 group "History and CLI"
 code=$(curl -s -o "${WORK}/history.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/history.php")
 status_is 200 "$code" "the history page renders"
 contains "${WORK}/history.html" "Activity log" "the activity log is present"
 contains "${WORK}/history.html" "alert.warning" "the warning we triggered is logged"
+
+# "set" reported success for a setting name that does not exist, so a mistyped
+# safety setting changed nothing and said it had.
+SETBAD=$(php "${ROOT}/bin/stormwatch.php" set alert_radius_MI 4 2>&1; echo "exit=$?")
+case "$SETBAD" in
+  *"exit=1"*) green "the CLI refuses a setting name that does not exist" ;;
+  *)          red "the CLI refuses a setting name that does not exist (got: ${SETBAD})" ;;
+esac
+RADIUS=$(php "${ROOT}/bin/stormwatch.php" get alert_radius_mi 2>/dev/null | tr -d '[:space:]')
+case "$RADIUS" in
+  *4*) red "and the typo left the real setting alone (alert_radius_mi is now ${RADIUS})" ;;
+  *)   green "and the typo left the real setting alone" ;;
+esac
+php "${ROOT}/bin/stormwatch.php" set alert_radius_mi 10 >/dev/null 2>&1
 
 php "${ROOT}/bin/stormwatch.php" status >"${WORK}/cli.txt" 2>&1
 contains "${WORK}/cli.txt" "Castle Fun Center" "the CLI reports the venue"
@@ -437,6 +669,208 @@ status_is 404 "$code" "nothing is served outside the mount"
 
 kill "$SUB_PID" 2>/dev/null; wait "$SUB_PID" 2>/dev/null
 
+# An installed site whose database is unreachable must not offer the installer
+# to whoever asks. Submitting it would rewrite config.php, mint a fresh app key
+# — making the stored Slack token and SMTP password unreadable — and create an
+# administrator account for a stranger.
+# A REST feed whose time field is mapped to the wrong key reads as "no time"
+# for every record, and every record is then stamped "now" — so an endpoint
+# that serves history delivers all of it as strikes happening this minute.
+# Drive a real endpoint rather than assert on the code.
+group "REST feed with a mis-mapped time field"
+cat > "${ROOT}/public/smoke-feed.php" <<'PHP'
+<?php
+// A fixture lightning endpoint. Two strikes near the venue, both from
+// yesterday, with the time under a key the operator has to map correctly.
+header('Content-Type: application/json');
+$yesterday = gmdate('c', time() - 86400);
+echo json_encode(['response' => [
+    ['loc' => ['lat' => 41.37, 'long' => -74.29], 'ob' => ['recordedAt' => $yesterday]],
+    ['loc' => ['lat' => 41.38, 'long' => -74.30], 'ob' => ['recordedAt' => $yesterday]],
+]]);
+PHP
+
+configureFeed() { # configureFeed <time-path>
+  php -r '
+  require "'"${ROOT}"'/src/bootstrap.php";
+  use StormWatch\Settings;
+  Settings::putRaw("provider", "rest");
+  Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-feed.php");
+  Settings::putRaw("rest_auth_mode", "none");
+  Settings::putRaw("rest_map_root", "response");
+  Settings::putRaw("rest_map_lat", "loc.lat");
+  Settings::putRaw("rest_map_lon", "loc.long");
+  Settings::putRaw("rest_map_time", $argv[1]);
+  Settings::putRaw("rest_time_format", "auto");
+  Settings::putRaw("rest_max_age_minutes", 20);
+  ' "$1"
+}
+
+# The wrong key: nothing readable anywhere, so the poll must refuse.
+configureFeed "ob.timestamp"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "records" => count($r["records"]), "message" => $r["message"]]);
+' > "${WORK}/feed-bad.json"
+contains "${WORK}/feed-bad.json" '"ok":false' "a time path that matches nothing fails the poll"
+contains "${WORK}/feed-bad.json" '"records":0' "and stores nothing"
+contains "${WORK}/feed-bad.json" "could not be read" "and says the time field is the problem"
+
+# The right key: the times now read, and yesterday's strikes are correctly
+# rejected as stale rather than stamped "now".
+configureFeed "ob.recordedAt"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "records" => count($r["records"]), "message" => $r["message"]]);
+' > "${WORK}/feed-good.json"
+contains "${WORK}/feed-good.json" '"ok":true' "the correct time path reads the feed"
+contains "${WORK}/feed-good.json" '"records":0' "and yesterday's strikes are not passed off as current"
+contains "${WORK}/feed-good.json" "freshness limit" "and the reason given is their age"
+
+# {now_iso} and {since_iso} expand to "...+00:00". A literal "+" in a query
+# string is a space by the time the endpoint reads it, so the offset is lost
+# and the request silently asks about a different hour. Have the fixture
+# report what actually arrived.
+cat > "${ROOT}/public/smoke-echo.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+echo json_encode(['seen' => $_GET, 'response' => []]);
+PHP
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-echo.php?start={since_iso}&end={now_iso}");
+$r = StormWatch\Providers\Rest::fetch();
+' >/dev/null 2>&1
+curl -s -o "${WORK}/echo.json" "${BASE}/smoke-echo.php?start=$(php -r 'echo rawurlencode(gmdate("c"));')"
+contains "${WORK}/echo.json" "+00:00" "an encoded ISO timestamp keeps its UTC offset through the query string"
+rm -f "${ROOT}/public/smoke-echo.php"
+
+# A runaway endpoint must not take the cron run down with it.
+cat > "${ROOT}/public/smoke-huge.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+echo '{"response":[';
+for ($i = 0; $i < 400; $i++) { echo str_repeat('x', 32768); }
+PHP
+HUGE=$(php -d memory_limit=64M -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-huge.php");
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "message" => substr($r["message"], 0, 120)]);
+' 2>&1)
+case "$HUGE" in
+  *'"ok":false'*) green "an oversized response is refused rather than swallowed" ;;
+  *)              red "an oversized response is refused rather than swallowed (got: ${HUGE})" ;;
+esac
+case "$HUGE" in
+  *"more than"*) green "and the operator is told the endpoint is the problem" ;;
+  *)             red "and the operator is told the endpoint is the problem (got: ${HUGE})" ;;
+esac
+rm -f "${ROOT}/public/smoke-huge.php"
+
+# Without cURL the app falls back to a stream, whose context "timeout" bounds
+# a single read rather than the call. An endpoint dribbling bytes satisfies it
+# for ever — and holds the tick lock, so every later cron minute skips out and
+# the alert state is never re-evaluated. On a REST feed that is the whole
+# alerting path stopped by one slow server.
+cat > "${ROOT}/public/smoke-drip.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+// A byte every two seconds: never idle long enough to trip a read timeout.
+for ($i = 0; $i < 60; $i++) { echo ' '; flush(); sleep(2); }
+PHP
+DRIP_START=$(date +%s)
+DRIP=$(php -d allow_url_fopen=1 -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-drip.php");
+// Force the non-cURL path by calling the stream branch directly.
+$m = new ReflectionMethod(StormWatch\Providers\Rest::class, "request");
+$m->setAccessible(true);
+$saved = null;
+[$body, $status, $error] = $m->invoke(null, Settings::getString("rest_endpoint"), ["Accept: application/json"]);
+echo json_encode(["error" => $error, "bytes" => strlen($body)]);
+' 2>&1)
+DRIP_ELAPSED=$(( $(date +%s) - DRIP_START ))
+check "a slow-drip endpoint is given up on rather than waited out (${DRIP_ELAPSED}s)" \
+  "$([ "$DRIP_ELAPSED" -lt "60" ] && echo 0 || echo 1)"
+rm -f "${ROOT}/public/smoke-drip.php"
+
+
+rm -f "${ROOT}/public/smoke-feed.php"
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
+
+# The shipped defaults put the venue at the demo coordinates and the provider
+# on the simulator, which fabricates strikes. Answering with them because a
+# query failed would invent a storm at somebody else's address — and do it
+# while every status line still read green.
+group "A settings read failure is not answered with defaults"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Database::instance()->run("ALTER TABLE settings RENAME TO settings_stashed");
+' >/dev/null 2>&1
+
+code=$(curl -s -o "${WORK}/broken-dash.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/index.php")
+status_is 500 "$code" "the dashboard refuses to render on a settings read failure"
+contains "${WORK}/broken-dash.html" "could not start" "and says it could not start"
+if grep -qF "Castle Fun Center" "${WORK}/broken-dash.html"; then
+  red "it does not fall back to the shipped demo venue"
+else
+  green "it does not fall back to the shipped demo venue"
+fi
+
+TICK=$(php "${ROOT}/bin/tick.php" -v 2>&1 | head -3)
+case "$TICK" in
+  *[Ss]imulat*) red "the cron job does not start simulating strikes (got: ${TICK})" ;;
+  *)            green "the cron job does not start simulating strikes" ;;
+esac
+
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Database::instance()->run("ALTER TABLE settings_stashed RENAME TO settings");
+' >/dev/null 2>&1
+code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/index.php")
+status_is 200 "$code" "and recovers as soon as the table is back"
+
+group "Setup stays closed when the database is unreachable"
+mv "${ROOT}/data/stormwatch.sqlite" "${WORK}/stashed.sqlite"
+chmod 500 "${ROOT}/data"
+
+LOCKJAR="${WORK}/lock.txt"
+code=$(curl -s -o "${WORK}/setup-locked.html" -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" "${BASE}/setup.php")
+status_is 503 "$code" "setup.php answers while the database is down"
+if grep -qF "Set up Storm Watch" "${WORK}/setup-locked.html"; then
+  red "the install wizard is not offered to an anonymous visitor"
+else
+  green "the install wizard is not offered to an anonymous visitor"
+fi
+contains "${WORK}/setup-locked.html" "cannot reach its database" "it says what is actually wrong"
+contains "${WORK}/setup-locked.html" "alerts are not being sent" "and that alerts are not being sent"
+
+# A POST is refused just as firmly as the form is withheld.
+code=$(curl -s -o /dev/null -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" \
+  -d "db_driver=sqlite" -d "username=attacker" -d "password=another-long-passphrase" \
+  -d "password_confirm=another-long-passphrase" -d "venue_name=Taken" -d "venue_lat=0" \
+  -d "venue_lon=0" -d "timezone=UTC" "${BASE}/setup.php")
+status_is 503 "$code" "a setup POST during the outage is answered, not acted on"
+
+chmod 755 "${ROOT}/data"
+mv "${WORK}/stashed.sqlite" "${ROOT}/data/stormwatch.sqlite"
+
+OWNER=$(php "${ROOT}/bin/stormwatch.php" get 2>/dev/null | head -1 >/dev/null; php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$u = StormWatch\Auth::listUsers();
+echo implode(",", array_map(static fn($r) => $r["username"], $u));
+')
+case "$OWNER" in
+  *attacker*) red "no account was created during the outage (found: ${OWNER})" ;;
+  *)          green "no account was created during the outage" ;;
+esac
+
 group "Sign out"
 curl -s -o /dev/null -c "$JAR" -b "$JAR" "${BASE}/logout.php"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/api/state.php")
@@ -444,10 +878,22 @@ status_is 401 "$code" "the session is gone after signing out"
 
 group "Server log"
 if grep -qiE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' "${WORK}/server.log"; then
-  red "no PHP errors were logged"
+  red "no PHP errors were logged by the web server"
   grep -iE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' "${WORK}/server.log" | head -10 | sed 's/^/      /'
 else
-  green "no PHP errors were logged"
+  green "no PHP errors were logged by the web server"
+fi
+
+# bootstrap.php points error_log at data/php-error.log as soon as data/ is
+# writable, which is before almost everything the suite does. Anything the
+# application itself raised lands there, not in the server log above — so
+# checking only the server log was checking the one place they cannot appear.
+APP_LOG="${ROOT}/data/php-error.log"
+if [ -f "$APP_LOG" ] && grep -qiE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)|Uncaught' "$APP_LOG"; then
+  red "no PHP errors were logged by the application"
+  grep -iE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)|Uncaught' "$APP_LOG" | head -10 | sed 's/^/      /'
+else
+  green "no PHP errors were logged by the application"
 fi
 
 printf '\n'

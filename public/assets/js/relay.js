@@ -21,7 +21,17 @@
   var reconnectTimer = null;
   var queue = [];
   var flushTimer = null;
+  var posting = false;
   var stats = { received: 0, sent: 0, lastSent: null };
+
+  /* Whether the feed is actually reaching us. The tab being open is not the
+     same thing: if the venue's firewall starts dropping port 3000, this script
+     reconnects forever while the page stays up, and a check-in that only said
+     "still here" would paint the dashboard green over a feed collecting
+     nothing. */
+  function isConnected() {
+    return socket !== null && socket.readyState === 1; // OPEN
+  }
 
   // ---- LZW, matching the encoding the feed uses ----
   function lzwDecode(input) {
@@ -127,34 +137,59 @@
     socket = null;
   }
 
+  /* How often to check in when there is nothing to send. Without this the
+     server has no way to tell a working relay during calm weather from a tab
+     somebody closed — and it is the tab closing that stops the alerts. */
+  var HEARTBEAT_MS = 60000;
+  var MAX_QUEUE = 2000;
+
   /* Batch the posts. A busy cell can produce strikes faster than one request
      each would be reasonable, and the server de-duplicates anyway. */
   function flush() {
-    if (!queue.length) return;
+    /* One request at a time. A busy cell can queue faster than a struggling
+       shared host answers, and without this the retry timer stacks a new POST
+       on top of every one still in flight — turning a momentary 503 into a
+       flood aimed at the server that is supposed to be raising the alarm. */
+    if (posting) return;
+
+    var due = queue.length > 0
+      || stats.lastSent === null
+      || (Date.now() - stats.lastSent) >= HEARTBEAT_MS;
+    if (!due) return;
+
     var batch = queue.splice(0, 200);
+    posting = true;
 
     fetch(config.ingestUrl, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-Ingest-Token': config.token },
-      body: JSON.stringify({ strikes: batch })
+      body: JSON.stringify({ strikes: batch, connected: isConnected() })
     })
       .then(function (response) { return response.json(); })
       .then(function (data) {
-        if (data.ok) {
-          stats.sent += data.stored;
-          stats.lastSent = Date.now();
-          if (data.stored > 0) sw.poll();
-        } else {
-          sw.setSourceStatus(false, 'Relay could not store strikes: ' + (data.error || 'unknown error'));
-        }
+        if (!data.ok) throw new Error(data.error || 'unknown error');
+        stats.sent += data.stored;
+        stats.lastSent = Date.now();
+        if (data.stored > 0) sw.poll();
       })
-      .catch(function () {
-        sw.setSourceStatus(false, 'Relay could not reach the server to store strikes.');
-      });
+      .catch(function (error) {
+        /* Put the batch back. A shared host answering 503 for a moment is
+           routine, and these are the only copy of those strikes — dropping
+           them loses the lightning nobody else was watching for. */
+        if (batch.length) {
+          queue = batch.concat(queue);
+          if (queue.length > MAX_QUEUE) queue.length = MAX_QUEUE;
+        }
+        sw.setSourceStatus(false, 'Relay could not store strikes ('
+          + (error && error.message ? error.message : 'no answer from the server')
+          + '); holding ' + queue.length + ' and retrying.');
+      })
+      .then(function () { posting = false; }, function () { posting = false; });
   }
 
   flushTimer = setInterval(flush, 10000);
+  flush();   // check in immediately, so the server knows the tab is here
 
   window.addEventListener('beforeunload', function () {
     clearInterval(flushTimer);

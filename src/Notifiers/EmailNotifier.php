@@ -20,9 +20,21 @@ final class EmailNotifier implements NotifierInterface
 
     public static function isEnabled(): bool
     {
-        return Settings::getBool('email_enabled')
-            && Settings::getList('email_to') !== []
-            && trim(Settings::getString('email_from')) !== '';
+        if (!Settings::getBool('email_enabled')) {
+            return false;
+        }
+        // "Configured" is not the same as "deliverable". The mailer drops any
+        // address that will not validate, so a list of nothing but typos would
+        // report ready on the dashboard and send to nobody.
+        if (filter_var(trim(Settings::getString('email_from')), FILTER_VALIDATE_EMAIL) === false) {
+            return false;
+        }
+        foreach (Settings::getList('email_to') as $address) {
+            if (filter_var($address, FILTER_VALIDATE_EMAIL) !== false) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @return array{ok:bool,message:string} */

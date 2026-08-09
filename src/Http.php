@@ -240,14 +240,29 @@ final class Http
         return (self::isHttps() ? 'https://' : 'http://') . $host . self::url($path);
     }
 
+    /**
+     * The address to attribute a request to, used for the sign-in throttle.
+     *
+     * X-Forwarded-For is a list, and only its last entry was written by the
+     * proxy in front of this app — everything to the left of it came from the
+     * client and can say anything. Reading the leftmost entry made the throttle
+     * both useless and dangerous: a different forged address on each attempt
+     * never trips it, and eight attempts carrying the duty manager's real
+     * address lock the duty manager out.
+     *
+     * Only consulted when trusted_proxy is set, because without a proxy in
+     * front the header is entirely the client's invention.
+     */
     public static function clientIp(): string
     {
         if (Config::get('trusted_proxy')) {
             $forwarded = (string) ($_SERVER['HTTP_X_FORWARDED_FOR'] ?? '');
             if ($forwarded !== '') {
-                $first = trim(explode(',', $forwarded)[0]);
-                if (filter_var($first, FILTER_VALIDATE_IP)) {
-                    return $first;
+                $hops = array_map('trim', explode(',', $forwarded));
+                for ($i = count($hops) - 1; $i >= 0; $i--) {
+                    if (filter_var($hops[$i], FILTER_VALIDATE_IP)) {
+                        return $hops[$i];
+                    }
                 }
             }
         }

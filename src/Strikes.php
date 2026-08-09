@@ -147,16 +147,30 @@ final class Strikes
      * The most recent strike inside a radius — used to decide whether the
      * all-clear timer has expired.
      *
+     * $receivedAfter restricts the answer to strikes that arrived at or after a
+     * given moment. The alert engine uses it to ask "is there anything new?" as
+     * distinct from "is there anything on record", which are different
+     * questions once a storm has already been announced and closed out.
+     *
+     * The boundary is inclusive on purpose. Timestamps here are whole seconds,
+     * and a strike inside the alert radius cannot have been on record when an
+     * all clear was decided — it would have prevented it — so one sharing that
+     * second arrived afterwards and is new. Excluding it would drop a real
+     * strike, which is the one mistake this system must not make.
+     *
      * @return array<string,mixed>|null
      */
-    public static function latestWithin(float $radiusMi, int $withinSeconds): ?array
+    public static function latestWithin(float $radiusMi, int $withinSeconds, ?int $receivedAfter = null): ?array
     {
-        return Database::instance()->first(
-            'SELECT id, struck_at, lat, lon, distance_mi, bearing_deg, source
-             FROM strikes WHERE distance_mi <= ? AND struck_at >= ?
-             ORDER BY struck_at DESC, id DESC LIMIT 1',
-            [$radiusMi, time() - $withinSeconds]
-        );
+        $sql = 'SELECT id, struck_at, lat, lon, distance_mi, bearing_deg, source
+                FROM strikes WHERE distance_mi <= ? AND struck_at >= ?';
+        $params = [$radiusMi, time() - $withinSeconds];
+        if ($receivedAfter !== null) {
+            $sql .= ' AND received_at >= ?';
+            $params[] = $receivedAfter;
+        }
+        $sql .= ' ORDER BY struck_at DESC, id DESC LIMIT 1';
+        return Database::instance()->first($sql, $params);
     }
 
     /**
@@ -184,15 +198,98 @@ final class Strikes
         ];
     }
 
+    /**
+     * The oldest strike the rest of the application still needs.
+     *
+     * The cooldown asks "has anything struck inside the radius in the last N
+     * minutes?" and reads that answer out of this table. A retention window
+     * shorter than N does not make the answer "no strikes recently" — it makes
+     * it "no strikes on record", which is the same answer, and the venue is
+     * sent an all clear with lightning still overhead. So retention has a floor
+     * that no setting can go under, plus a margin for a cron run that fires
+     * late.
+     */
+    public static function minimumRetentionSeconds(): int
+    {
+        // Only the cooldown belongs here. It is the one window whose absence
+        // changes a decision — an all clear issued because the evidence was
+        // deleted. How long markers stay on the map is presentation: if the
+        // history is shorter, the map trail is shorter, and quietly keeping
+        // half a day of rows to lengthen it would be exactly the "storing more
+        // than was asked for" the retention rule exists to avoid.
+        return max(60, Settings::getInt('all_clear_minutes') * 60) + 300;
+    }
+
     public static function prune(?int $retentionHours = null): int
     {
         $hours = $retentionHours ?? Settings::getInt('retention_hours');
-        $hours = max(1, $hours);
+        $seconds = max(1, $hours) * 3600;
+        // Housekeeping must never be able to delete the evidence the alert
+        // state machine is reasoning from.
+        $seconds = max($seconds, self::minimumRetentionSeconds());
         $stmt = Database::instance()->run(
             'DELETE FROM strikes WHERE struck_at < ?',
-            [time() - ($hours * 3600)]
+            [time() - $seconds]
         );
         return $stmt->rowCount();
+    }
+
+    /**
+     * Recompute every stored strike's distance and bearing against the venue.
+     *
+     * Distance is worked out once, when a strike arrives, and stored — which is
+     * what makes the hot queries cheap. It also means that correcting a
+     * mistyped venue coordinate leaves every strike on record measured from the
+     * old place: the alert engine goes on holding a warning for lightning that
+     * is nowhere near the new one, and the map draws it in the wrong spot.
+     *
+     * @return int rows updated
+     */
+    public static function recomputeDistances(): int
+    {
+        $venueLat = Settings::getFloat('venue_lat');
+        $venueLon = Settings::getFloat('venue_lon');
+        $db = Database::instance();
+        $updated = 0;
+
+        // Three days of a busy season is a lot of rows, and on SQLite an
+        // unwrapped UPDATE is its own transaction and its own fsync. One
+        // transaction turns a settings save that would appear to hang into a
+        // save that returns.
+        $ownTransaction = !$db->pdo()->inTransaction();
+        if ($ownTransaction) {
+            $db->pdo()->beginTransaction();
+        }
+
+        try {
+            foreach ($db->all('SELECT id, lat, lon FROM strikes') as $row) {
+                $lat = (float) $row['lat'];
+                $lon = (float) $row['lon'];
+                $db->run(
+                    'UPDATE strikes SET distance_mi = ?, bearing_deg = ? WHERE id = ?',
+                    [
+                        Geo::distanceMiles($venueLat, $venueLon, $lat, $lon),
+                        Geo::bearingDegrees($venueLat, $venueLon, $lat, $lon),
+                        (int) $row['id'],
+                    ]
+                );
+                $updated++;
+            }
+
+            // Anything now outside the display radius was never meant to be kept.
+            $db->run('DELETE FROM strikes WHERE distance_mi > ?', [Settings::getFloat('display_radius_mi')]);
+
+            if ($ownTransaction) {
+                $db->pdo()->commit();
+            }
+        } catch (\Throwable $e) {
+            if ($ownTransaction && $db->pdo()->inTransaction()) {
+                $db->pdo()->rollBack();
+            }
+            throw $e;
+        }
+
+        return $updated;
     }
 
     public static function deleteAll(): int

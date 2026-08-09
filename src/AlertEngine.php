@@ -68,7 +68,36 @@ final class AlertEngine
         // and the decision is already durable — no other process will send
         // this alert — so there is nothing to gain by holding it.
         if ($outcome['alert'] !== null) {
-            self::dispatch($outcome['alert']);
+            $delivery = self::dispatch($outcome['alert']);
+
+            // The decision was recorded before delivery was attempted, which is
+            // what stops two overlapping cron runs sending the same alert
+            // twice. It also means an alert nobody could deliver is filed as
+            // announced: a Slack outage or a refused SMTP login during the one
+            // storm of the summer, and the venue is never told at all, because
+            // the next tick sees the warning as already given.
+            //
+            // So when every enabled channel failed, put the announcement back
+            // and let the next run try again. Only when *every* one failed —
+            // a partial success has reached somebody, and repeating it would
+            // be the alert spam the cooldown exists to prevent.
+            if ($delivery['attempted'] > 0 && $delivery['delivered'] === 0) {
+                // Only undo what this run wrote. Delivery takes seconds and the
+                // lock is long released, so the streaming worker may have
+                // evaluated and moved the announcement on in the meantime —
+                // restoring blindly would erase a decision somebody else made.
+                $current = self::state();
+                if ((int) ($current['notified_at'] ?? 0) === $outcome['announced_stamp']) {
+                    self::updateState($outcome['announced_before']);
+                }
+                Events::log(
+                    'alert.undelivered',
+                    Events::SEVERITY_ERROR,
+                    'No alert channel accepted the ' . $outcome['alert']->kind
+                        . ' notification, so it is being held for the next run rather than counted as sent.',
+                    []
+                );
+            }
         } elseif (!empty($outcome['log_suppression'])) {
             Events::log(
                 'alert.suppressed',
@@ -156,21 +185,36 @@ final class AlertEngine
 
         $cooldownRadius = self::cooldownRadius();
 
-        $lastInAlert = Strikes::latestWithin($alertRadius, $window);
-        $lastInWatch = Strikes::latestWithin($watchRadius, $window);
+        $previousLevel = (string) $state['level'];
+        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
+        $notifiedAt = (int) ($state['notified_at'] ?? 0);
+
+        // Once an all clear has gone out, that storm is closed: its strikes are
+        // what the all clear was *about*, and they must never re-open it. Only
+        // something that has arrived since can raise the next warning.
+        //
+        // Without this the lookback is the cooldown setting itself, which an
+        // operator can lengthen whenever they like. Raising the hold from 30
+        // minutes to four hours on a clear evening then reaches back over an
+        // afternoon storm that is long over and already all-cleared, and posts
+        // "move activities indoors" under an empty sky.
+        //
+        // The bound is on arrival, not on strike time, so a strike that merely
+        // reached us late still alerts — that one is genuinely new information.
+        $closedOutAt = ($notifiedLevel === self::LEVEL_CLEAR && $notifiedAt > 0) ? $notifiedAt : null;
+
+        $lastInAlert = Strikes::latestWithin($alertRadius, $window, $closedOutAt);
+        $lastInWatch = Strikes::latestWithin($watchRadius, $window, $closedOutAt);
         // The cooldown may be measured over a wider ring than the one that
         // triggers an alert, so a storm circling just outside the alert radius
-        // does not produce a premature all clear.
-        $lastInCooldown = $cooldownRadius > $alertRadius
-            ? Strikes::latestWithin($cooldownRadius, $window)
-            : $lastInAlert;
+        // does not produce a premature all clear. It also asks a different
+        // question from the two above — "has the sky been quiet?" rather than
+        // "is there anything new?" — so it reads everything on record.
+        $lastInCooldown = Strikes::latestWithin(max($cooldownRadius, $alertRadius), $window);
 
         $nearest = Strikes::nearest($window);
 
-        $previousLevel = (string) $state['level'];
         $muted = isset($state['muted_until']) && (int) $state['muted_until'] > $now;
-        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
-        $notifiedAt = (int) ($state['notified_at'] ?? 0);
         $notifiedNearest = $state['notified_nearest_mi'] !== null ? (float) $state['notified_nearest_mi'] : null;
 
         $wasElevated = $previousLevel === self::LEVEL_WARNING || $notifiedLevel === self::LEVEL_WARNING;
@@ -254,6 +298,16 @@ final class AlertEngine
 
         return [
             'alert' => $deliver ? $alert : null,
+            // What the announcement state was before this run touched it, so
+            // an alert nobody could deliver can be un-announced and retried.
+            'announced_before' => [
+                'notified_level' => $state['notified_level'],
+                'notified_at' => $state['notified_at'],
+                'notified_nearest_mi' => $state['notified_nearest_mi'],
+            ],
+            // The notified_at this run stamped, so the rollback can tell its own
+            // write from somebody else's.
+            'announced_stamp' => $now,
             'muted' => $muted,
             // Only worth a log line when the situation actually changed;
             // a mute lasts many cron ticks.
@@ -429,8 +483,13 @@ final class AlertEngine
         $alert->struckAt = (int) $strike['struck_at'];
     }
 
-    /** Send an alert through every enabled channel and log the outcome. */
-    public static function dispatch(Alert $alert): void
+    /**
+     * Send an alert through every enabled channel and log the outcome.
+     *
+     * @return array{attempted:int,delivered:int} so the caller can tell "sent"
+     *         from "nobody was listening" from "everything refused it"
+     */
+    public static function dispatch(Alert $alert): array
     {
         $severity = $alert->isCritical() ? Events::SEVERITY_CRITICAL : Events::SEVERITY_INFO;
         Events::log('alert.' . $alert->kind, $severity, $alert->title, [
@@ -439,15 +498,22 @@ final class AlertEngine
             'bearing_deg' => $alert->bearingDeg,
         ]);
 
+        $attempted = 0;
+        $delivered = 0;
+
         foreach ([SlackNotifier::class, EmailNotifier::class] as $notifier) {
             /** @var class-string<\StormWatch\Notifiers\NotifierInterface> $notifier */
             if (!$notifier::isEnabled()) {
                 continue;
             }
+            $attempted++;
             try {
                 $result = $notifier::send($alert);
             } catch (\Throwable $e) {
                 $result = ['ok' => false, 'message' => $e->getMessage()];
+            }
+            if ($result['ok']) {
+                $delivered++;
             }
             Events::log(
                 $notifier::channel() . '.' . ($result['ok'] ? 'sent' : 'failed'),
@@ -456,6 +522,8 @@ final class AlertEngine
                 ['kind' => $alert->kind]
             );
         }
+
+        return ['attempted' => $attempted, 'delivered' => $delivered];
     }
 
     /**
@@ -489,7 +557,11 @@ final class AlertEngine
                         : ''
                 )
             );
-            if (Settings::getBool('notify_all_clear')) {
+            // A mute is one setting that governs everything reaching Slack and
+            // email; closing time is not an exception to it. The log still gets
+            // the line either way, so the record is complete.
+            $muted = isset($state['muted_until']) && (int) $state['muted_until'] > time();
+            if (Settings::getBool('notify_all_clear') && !$muted) {
                 self::dispatch($alert);
             } else {
                 Events::log('alert.stand_down', Events::SEVERITY_INFO, $alert->title, []);
@@ -502,6 +574,29 @@ final class AlertEngine
             'notified_nearest_mi' => null,
             'notified_at' => time(),
             'since' => time(),
+        ]);
+    }
+
+    /**
+     * Put the state machine back to a standing start without announcing
+     * anything.
+     *
+     * Used when the strike history is deleted. The evidence the engine reasons
+     * from has just gone, so leaving "a warning has been announced" on record
+     * means the next cron tick sees a warning with no strikes behind it and
+     * posts an all clear — one derived from an empty table rather than from a
+     * quiet sky, and quite possibly while the storm is still overhead.
+     */
+    public static function reset(): void
+    {
+        self::updateState([
+            'level' => self::LEVEL_CLEAR,
+            'since' => time(),
+            'nearest_mi' => null,
+            'nearest_at' => null,
+            'notified_level' => self::LEVEL_CLEAR,
+            'notified_at' => time(),
+            'notified_nearest_mi' => null,
         ]);
     }
 

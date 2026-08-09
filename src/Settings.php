@@ -174,7 +174,21 @@ final class Settings
         try {
             $rows = Database::instance()->all('SELECT skey, svalue FROM settings');
         } catch (\Throwable $e) {
-            return $values; // not installed yet
+            // Before installation there is no settings table and the defaults
+            // are the right answer. Afterwards a failed read is not "everything
+            // happens to be at its default": those defaults move the venue to
+            // the shipped demo coordinates, so every distance is measured from
+            // the wrong place, and set the provider to the simulator, which
+            // fabricates strikes. A blocked query would quietly become an
+            // invented storm at somebody else's address.
+            if (Config::isInstalled()) {
+                throw new \RuntimeException(
+                    'The settings could not be read from the database: ' . $e->getMessage(),
+                    0,
+                    $e
+                );
+            }
+            return $values;
         }
 
         foreach ($rows as $row) {
@@ -302,6 +316,26 @@ final class Settings
         if (isset($clean['timezone']) && !in_array($clean['timezone'], timezone_identifiers_list(), true)) {
             $errors['timezone'] = 'Unknown time zone. Use an identifier such as America/New_York.';
         }
+        // Strike history is not just a map: it is where the cooldown reads
+        // "has anything struck recently". Keep less of it than the cooldown
+        // spans and the answer becomes "nothing on record", which reads as
+        // "nothing happened" — an all clear issued mid-storm. Strikes::prune()
+        // enforces a floor regardless, but silently keeping more than was asked
+        // for is its own kind of wrong, so say so instead.
+        $cooldownHours = (int) ceil(((int) $merged['all_clear_minutes']) / 60);
+        if ((int) $merged['retention_hours'] < $cooldownHours) {
+            $field = isset($clean['all_clear_minutes']) ? 'all_clear_minutes' : 'retention_hours';
+            $errors[$field] = sprintf(
+                'Strike history is kept for %d hour%s but the cooldown spans %d minutes. The all clear is decided '
+                . 'from stored strikes, so a shorter history would end the hold early. Keep history for at least '
+                . '%d hour%s (System tab), or shorten the cooldown.',
+                (int) $merged['retention_hours'],
+                (int) $merged['retention_hours'] === 1 ? '' : 's',
+                (int) $merged['all_clear_minutes'],
+                $cooldownHours,
+                $cooldownHours === 1 ? '' : 's'
+            );
+        }
         // A watch ring larger than the endpoint will answer for is not a
         // cosmetic problem: strikes in the gap are never fetched, so the system
         // stays green through a storm it cannot see. The display ring may
@@ -351,8 +385,28 @@ final class Settings
             }
         }
         if (!empty($merged['email_enabled'])) {
-            if (self::listFrom((string) $merged['email_to']) === []) {
+            $addresses = self::listFrom((string) $merged['email_to']);
+            if ($addresses === []) {
                 $errors['email_to'] = 'Add at least one recipient address.';
+            } else {
+                // The mailer drops anything that will not validate, so a typo
+                // here becomes an address that is never written to and never
+                // mentioned again — while the dashboard goes on reporting email
+                // ready. Refuse it at the point somebody can still see it.
+                $bad = array_values(array_filter(
+                    $addresses,
+                    static fn(string $a): bool => filter_var($a, FILTER_VALIDATE_EMAIL) === false
+                ));
+                if ($bad !== []) {
+                    $errors['email_to'] = sprintf(
+                        'These do not look like email addresses: %s. Alerts sent to them would be dropped silently.',
+                        implode(', ', $bad)
+                    );
+                }
+            }
+            if (trim((string) $merged['email_from']) !== ''
+                && filter_var(trim((string) $merged['email_from']), FILTER_VALIDATE_EMAIL) === false) {
+                $errors['email_from'] = 'The "from" address is not a valid email address, so nothing would be sent.';
             }
             if ($merged['email_transport'] === 'smtp' && trim((string) $merged['smtp_host']) === '') {
                 $errors['smtp_host'] = 'An SMTP host is required when the SMTP transport is selected.';
@@ -366,6 +420,10 @@ final class Settings
             return $errors;
         }
 
+        // Noted before the write, so the comparison is against what was stored.
+        $venueMoved = (isset($clean['venue_lat']) && (float) $clean['venue_lat'] !== self::getFloat('venue_lat'))
+            || (isset($clean['venue_lon']) && (float) $clean['venue_lon'] !== self::getFloat('venue_lon'));
+
         $db = Database::instance();
         $now = time();
         foreach ($clean as $key => $value) {
@@ -376,6 +434,23 @@ final class Settings
             ], 'skey');
         }
         self::flushCache();
+
+        // Every strike carries the distance it was measured at when it arrived.
+        // Correcting a mistyped coordinate would otherwise leave the alert
+        // engine holding a warning for lightning nowhere near the new location.
+        if ($venueMoved) {
+            try {
+                Strikes::recomputeDistances();
+            } catch (\Throwable $e) {
+                Events::log(
+                    'system.error',
+                    Events::SEVERITY_ERROR,
+                    'The venue moved but the stored strike distances could not be recalculated: ' . $e->getMessage(),
+                    []
+                );
+            }
+        }
+
         return [];
     }
 

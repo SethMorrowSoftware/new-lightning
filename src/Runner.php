@@ -177,7 +177,9 @@ final class Runner
         $provider = Settings::getString('provider');
         $lastTick = self::lastRun('tick');
         $lastIngestJob = $provider === 'blitzortung' ? 'worker' : 'poll';
-        $lastIngest = self::lastRun($lastIngestJob);
+        // Narrowed to the configured provider, so another source's run cannot
+        // stand in for this one's health.
+        $lastIngest = self::lastRun($lastIngestJob, $provider);
         $now = time();
 
         $cronAge = $lastTick !== null ? $now - (int) $lastTick['started_at'] : null;
@@ -185,14 +187,54 @@ final class Runner
         $cronHealthy = $cronAge !== null && $cronAge < 300;
 
         if ($provider === 'relay') {
+            // What matters is whether the tab is still there, not whether there
+            // has been lightning. A venue can go weeks without a strike inside
+            // thirty miles, and a badge that reads "feed problem" for weeks is
+            // a badge nobody reads on the day it means something. The relay
+            // checks in on a timer even with nothing to send.
+            $lastCheckIn = $lastIngest !== null ? (int) $lastIngest['started_at'] : null;
             $lastRelay = Database::instance()->first(
                 "SELECT MAX(received_at) AS last_at FROM strikes WHERE source = 'relay'"
             );
             $lastRelayAt = isset($lastRelay['last_at']) && $lastRelay['last_at'] !== null ? (int) $lastRelay['last_at'] : null;
-            $sourceHealthy = $lastRelayAt !== null && ($now - $lastRelayAt) < 900;
-            $sourceMessage = $lastRelayAt === null
-                ? 'No strikes have been relayed yet. Keep a dashboard tab open on a machine that stays on.'
-                : sprintf('Last relayed strike %s ago.', self::humanAge($now - $lastRelayAt));
+
+            // A tab still running an older script does not check in, so accept
+            // a recently relayed strike as proof of life too.
+            $freshCheckIn = $lastCheckIn !== null && ($now - $lastCheckIn) < 300;
+            // The tab being open is not the feed being connected. A relay whose
+            // socket is down checks in faithfully and collects nothing, and
+            // calling that healthy is worse than calling a working relay
+            // broken — it is a green badge over a storm nobody is watching.
+            $relayConnected = $lastIngest !== null && (int) $lastIngest['ok'] === 1;
+            $freshStrike = $lastRelayAt !== null && ($now - $lastRelayAt) < 900;
+            // A recent check-in is the better evidence and settles it either
+            // way: a relay that says its socket is down is down, whatever it
+            // was delivering a few minutes ago. The strike fallback is only for
+            // a tab still running an older script, which checks in only when it
+            // has something to send.
+            $sourceHealthy = $freshCheckIn ? $relayConnected : $freshStrike;
+
+            if ($lastCheckIn === null && $lastRelayAt === null) {
+                $sourceMessage = 'No browser relay has ever checked in. Open the dashboard on a machine that stays on '
+                    . 'and leave the tab open.';
+            } elseif ($freshCheckIn && !$relayConnected) {
+                $sourceMessage = 'The relay tab is open but cannot reach Blitzortung, so no lightning is being '
+                    . 'collected. The feed uses port 3000 — check whether the network started blocking it, or switch '
+                    . 'to a REST source.';
+            } elseif ($sourceHealthy) {
+                $sourceMessage = $lastRelayAt !== null
+                    ? sprintf(
+                        'Relay tab connected; last relayed strike %s ago.',
+                        self::humanAge($now - $lastRelayAt)
+                    )
+                    : 'Relay tab connected; no lightning within the display radius yet.';
+            } else {
+                $sourceMessage = sprintf(
+                    'The relay tab has not checked in for %s. Lightning is not being collected — reopen the dashboard '
+                    . 'on the machine that runs it.',
+                    self::humanAge($now - (int) max((int) $lastCheckIn, (int) $lastRelayAt))
+                );
+            }
         } else {
             $sourceHealthy = $lastIngest !== null && (int) $lastIngest['ok'] === 1;
             $sourceMessage = $lastIngest !== null
@@ -219,16 +261,70 @@ final class Runner
             'source_last_run' => $lastIngest !== null ? (int) $lastIngest['started_at'] : null,
             'slack_ready' => \StormWatch\Notifiers\SlackNotifier::isEnabled(),
             'email_ready' => \StormWatch\Notifiers\EmailNotifier::isEnabled(),
+            // Whether a channel is configured is not whether it works. A
+            // revoked token, or a bot removed from its channel, leaves both
+            // flags above true — and the dashboard showed a green tick over a
+            // channel that had not delivered anything for weeks.
+            'delivery' => self::deliveryHealth(),
         ];
     }
 
-    /** @return array<string,mixed>|null */
-    public static function lastRun(string $job): ?array
+    /**
+     * The last delivery attempt on each alert channel.
+     *
+     * "Configured" and "working" are different questions and only the first was
+     * being asked. This answers the second from what actually happened, so a
+     * channel that is switched on and rejecting everything cannot sit behind a
+     * green tick until the day it matters.
+     *
+     * @return array<string,array{ok:bool,at:int,message:string}>
+     */
+    private static function deliveryHealth(): array
     {
-        return Database::instance()->first(
-            'SELECT * FROM runs WHERE job = ? ORDER BY id DESC LIMIT 1',
-            [$job]
-        );
+        $out = [];
+        foreach (['slack', 'email'] as $channel) {
+            try {
+                $row = Database::instance()->first(
+                    'SELECT created_at, type, message FROM events
+                     WHERE type = ? OR type = ? ORDER BY id DESC LIMIT 1',
+                    [$channel . '.sent', $channel . '.failed']
+                );
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if ($row === null) {
+                continue;   // never used: nothing to report either way
+            }
+            $out[$channel] = [
+                'ok' => (string) $row['type'] === $channel . '.sent',
+                'at' => (int) $row['created_at'],
+                'message' => mb_substr((string) $row['message'], 0, 200),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * The most recent run of a job, optionally narrowed to one provider.
+     *
+     * The narrowing matters: the browser relay records its deliveries under the
+     * same 'poll' job name as the REST poller. Without it, a relay tab someone
+     * forgot to close after switching to a REST feed keeps answering "we polled
+     * a moment ago" on the REST poller's behalf — so the endpoint is never
+     * polled again and the dashboard reports the relay's success as the feed's.
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function lastRun(string $job, ?string $provider = null): ?array
+    {
+        $sql = 'SELECT * FROM runs WHERE job = ?';
+        $params = [$job];
+        if ($provider !== null) {
+            $sql .= ' AND provider = ?';
+            $params[] = $provider;
+        }
+        $sql .= ' ORDER BY id DESC LIMIT 1';
+        return Database::instance()->first($sql, $params);
     }
 
     public static function recordRun(
@@ -281,7 +377,7 @@ final class Runner
     private static function restPollDue(): bool
     {
         $interval = self::restPollInterval();
-        $last = self::lastRun('poll');
+        $last = self::lastRun('poll', 'rest');
         if ($last === null) {
             return true;
         }
@@ -327,9 +423,20 @@ final class Runner
                 continue;
             }
             try {
-                $notifier::send($alert);
+                $result = $notifier::send($alert);
             } catch (\Throwable $e) {
-                // Nothing useful to do if the failure notice itself fails.
+                $result = ['ok' => false, 'message' => $e->getMessage()];
+            }
+            // There is nothing to retry here, but "we tried to tell you the
+            // feed was down and could not" is exactly what somebody wants to
+            // find in the log afterwards.
+            if (!$result['ok']) {
+                Events::log(
+                    $notifier::channel() . '.failed',
+                    Events::SEVERITY_ERROR,
+                    'The feed-failure notice could not be delivered: ' . $result['message'],
+                    ['kind' => Alert::KIND_ERROR]
+                );
             }
         }
     }

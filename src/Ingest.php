@@ -80,6 +80,28 @@ final class Ingest
     }
 
     /**
+     * Could parseTimestamp() actually read this, or would it fall back to now?
+     *
+     * The fallback is deliberate for a single missing field — dropping a strike
+     * is worse than dating it a few seconds early — but it hides the case that
+     * matters: a time path pointing at the wrong key, which stamps every record
+     * "now" and turns an endpoint's history into a storm happening this minute.
+     * Callers use this to tell the two apart.
+     *
+     * @param mixed $value
+     */
+    public static function isReadableTimestamp($value, string $format = 'auto'): bool
+    {
+        if ($value === null || $value === '') {
+            return false;
+        }
+        if ($format === 'iso8601' || (!is_numeric($value) && is_string($value))) {
+            return strtotime((string) $value) !== false;
+        }
+        return is_numeric($value) && (float) $value > 0;
+    }
+
+    /**
      * Resolve a dot-separated path inside a decoded JSON structure.
      * An empty path returns the value unchanged.
      *
