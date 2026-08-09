@@ -159,7 +159,12 @@ final class Migrations
                 continue;
             }
             $migrate($db);
-            $db->run('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)', [$version, time()]);
+            // A cron tick and a dashboard poll can reach a new release in the
+            // same second, both read the same pending list, and both run it.
+            // Every migration is written to be idempotent, so the only casualty
+            // is the bookkeeping row — and a primary-key collision there would
+            // surface as a 500 on whichever request lost.
+            $db->insertIgnore('schema_migrations', ['version' => $version, 'applied_at' => time()]);
         }
 
         // The alert state is a single row; make sure it exists.

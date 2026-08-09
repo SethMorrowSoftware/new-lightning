@@ -40,26 +40,22 @@ Http::startSession();
 if (Config::isInstalled()) {
     $accounts = Auth::countAccounts();
     if ($accounts === null) {
-        View::start(['title' => 'Database unreachable', 'bodyClass' => 'centered', 'wrap' => 'wrap tight']);
-        ?>
-        <div class="card">
-          <h1 style="font-size:20px;margin-bottom:10px;">Storm Watch cannot reach its database</h1>
-          <p class="helptext">
-            This installation is already set up, so the wizard will not run. The database named in
-            <code>config/config.php</code> is not answering — a server that is down, credentials that have
-            changed, or a data directory that is no longer writable.
-          </p>
-          <p class="helptext">
-            Correct the credentials in <code>config/config.php</code> and reload this page. To install from
-            scratch instead, delete that file first — which also discards the stored Slack token and SMTP
-            password, so they will need entering again.
-          </p>
-          <p class="helptext">
-            <strong>Lightning alerts are not being sent while this is true.</strong>
-          </p>
-        </div>
-        <?php
-        View::end([], 'Storm Watch v' . SW_VERSION);
+        // Deliberately not rendered through View: the normal chrome reads the
+        // venue name out of the settings table, which is the very thing that
+        // cannot be reached. A page about a broken database must not need it.
+        http_response_code(503);
+        header('Content-Type: text/html; charset=utf-8');
+        echo '<!doctype html><meta charset="utf-8"><title>Storm Watch</title>'
+            . '<body style="font-family:system-ui;background:#080C16;color:#F3F5FA;padding:40px;line-height:1.6;">'
+            . '<h1 style="font-size:20px;">Storm Watch cannot reach its database</h1>'
+            . '<p style="color:#9AA4C0;max-width:60ch;">This installation is already set up, so the wizard will '
+            . 'not run. The database named in <code>config/config.php</code> is not answering — a server that is '
+            . 'down, credentials that have changed, or a data directory that is no longer writable.</p>'
+            . '<p style="color:#9AA4C0;max-width:60ch;">Correct the credentials in <code>config/config.php</code> '
+            . 'and reload this page. To install from scratch instead, delete that file first — which also discards '
+            . 'the stored Slack token and SMTP password, so they will need entering again.</p>'
+            . '<p style="color:#FF4D5E;max-width:60ch;"><strong>Lightning alerts are not being sent while this is '
+            . 'true.</strong></p></body>';
         exit;
     }
     if ($accounts > 0) {

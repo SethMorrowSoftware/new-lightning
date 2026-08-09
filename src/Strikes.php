@@ -211,9 +211,13 @@ final class Strikes
      */
     public static function minimumRetentionSeconds(): int
     {
-        $cooldown = max(60, Settings::getInt('all_clear_minutes') * 60);
-        $markers = max(60, Settings::getInt('marker_ttl_minutes') * 60);
-        return max($cooldown, $markers) + 300;
+        // Only the cooldown belongs here. It is the one window whose absence
+        // changes a decision — an all clear issued because the evidence was
+        // deleted. How long markers stay on the map is presentation: if the
+        // history is shorter, the map trail is shorter, and quietly keeping
+        // half a day of rows to lengthen it would be exactly the "storing more
+        // than was asked for" the retention rule exists to avoid.
+        return max(60, Settings::getInt('all_clear_minutes') * 60) + 300;
     }
 
     public static function prune(?int $retentionHours = null): int
@@ -228,6 +232,44 @@ final class Strikes
             [time() - $seconds]
         );
         return $stmt->rowCount();
+    }
+
+    /**
+     * Recompute every stored strike's distance and bearing against the venue.
+     *
+     * Distance is worked out once, when a strike arrives, and stored — which is
+     * what makes the hot queries cheap. It also means that correcting a
+     * mistyped venue coordinate leaves every strike on record measured from the
+     * old place: the alert engine goes on holding a warning for lightning that
+     * is nowhere near the new one, and the map draws it in the wrong spot.
+     *
+     * @return int rows updated
+     */
+    public static function recomputeDistances(): int
+    {
+        $venueLat = Settings::getFloat('venue_lat');
+        $venueLon = Settings::getFloat('venue_lon');
+        $db = Database::instance();
+        $updated = 0;
+
+        foreach ($db->all('SELECT id, lat, lon FROM strikes') as $row) {
+            $lat = (float) $row['lat'];
+            $lon = (float) $row['lon'];
+            $db->run(
+                'UPDATE strikes SET distance_mi = ?, bearing_deg = ? WHERE id = ?',
+                [
+                    Geo::distanceMiles($venueLat, $venueLon, $lat, $lon),
+                    Geo::bearingDegrees($venueLat, $venueLon, $lat, $lon),
+                    (int) $row['id'],
+                ]
+            );
+            $updated++;
+        }
+
+        // Anything now outside the display radius was never meant to be kept.
+        $db->run('DELETE FROM strikes WHERE distance_mi > ?', [Settings::getFloat('display_radius_mi')]);
+
+        return $updated;
     }
 
     public static function deleteAll(): int

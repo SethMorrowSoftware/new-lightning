@@ -751,13 +751,45 @@ rm -f "${ROOT}/public/smoke-huge.php"
 rm -f "${ROOT}/public/smoke-feed.php"
 php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
 
+# The shipped defaults put the venue at the demo coordinates and the provider
+# on the simulator, which fabricates strikes. Answering with them because a
+# query failed would invent a storm at somebody else's address — and do it
+# while every status line still read green.
+group "A settings read failure is not answered with defaults"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Database::instance()->run("ALTER TABLE settings RENAME TO settings_stashed");
+' >/dev/null 2>&1
+
+code=$(curl -s -o "${WORK}/broken-dash.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/index.php")
+status_is 500 "$code" "the dashboard refuses to render on a settings read failure"
+contains "${WORK}/broken-dash.html" "could not start" "and says it could not start"
+if grep -qF "Castle Fun Center" "${WORK}/broken-dash.html"; then
+  red "it does not fall back to the shipped demo venue"
+else
+  green "it does not fall back to the shipped demo venue"
+fi
+
+TICK=$(php "${ROOT}/bin/tick.php" -v 2>&1 | head -3)
+case "$TICK" in
+  *[Ss]imulat*) red "the cron job does not start simulating strikes (got: ${TICK})" ;;
+  *)            green "the cron job does not start simulating strikes" ;;
+esac
+
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Database::instance()->run("ALTER TABLE settings_stashed RENAME TO settings");
+' >/dev/null 2>&1
+code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/index.php")
+status_is 200 "$code" "and recovers as soon as the table is back"
+
 group "Setup stays closed when the database is unreachable"
 mv "${ROOT}/data/stormwatch.sqlite" "${WORK}/stashed.sqlite"
 chmod 500 "${ROOT}/data"
 
 LOCKJAR="${WORK}/lock.txt"
 code=$(curl -s -o "${WORK}/setup-locked.html" -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" "${BASE}/setup.php")
-status_is 200 "$code" "setup.php answers while the database is down"
+status_is 503 "$code" "setup.php answers while the database is down"
 if grep -qF "Set up Storm Watch" "${WORK}/setup-locked.html"; then
   red "the install wizard is not offered to an anonymous visitor"
 else
@@ -771,7 +803,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" \
   -d "db_driver=sqlite" -d "username=attacker" -d "password=another-long-passphrase" \
   -d "password_confirm=another-long-passphrase" -d "venue_name=Taken" -d "venue_lat=0" \
   -d "venue_lon=0" -d "timezone=UTC" "${BASE}/setup.php")
-status_is 200 "$code" "a setup POST during the outage is answered, not acted on"
+status_is 503 "$code" "a setup POST during the outage is answered, not acted on"
 
 chmod 755 "${ROOT}/data"
 mv "${WORK}/stashed.sqlite" "${ROOT}/data/stormwatch.sqlite"

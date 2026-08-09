@@ -727,6 +727,53 @@ T::group('Closing time honours a mute');
     T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
 }
 
+T::group('Correcting the venue coordinates re-measures the strikes');
+{
+    // Distance is worked out once, when a strike arrives, and stored. So a
+    // mistyped coordinate does not just move the map pin — it leaves every
+    // strike on record measured from the wrong place, and the alert engine
+    // goes on holding a warning for lightning nowhere near the real venue.
+    resetData();
+    Settings::put([
+        'venue_lat' => 41.3608, 'venue_lon' => -74.2854,
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'notify_all_clear' => true,
+    ]);
+
+    placeStrike(5.0, 90.0);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'a strike 5 mi from the entered location alerts');
+
+    // The real venue is about 17 miles north — outside the alert radius, still
+    // inside the display radius.
+    $corrected = Geo::destination(41.3608, -74.2854, 0.0, 17.0);
+    $errors = Settings::put(['venue_lat' => $corrected['lat'], 'venue_lon' => $corrected['lon']]);
+    T::same([], $errors, 'the corrected coordinates save');
+
+    $stored = Database::instance()->first('SELECT distance_mi FROM strikes ORDER BY id DESC LIMIT 1');
+    T::ok(
+        $stored !== null && (float) $stored['distance_mi'] > 10.0,
+        'the stored strike is re-measured against the new location'
+    );
+
+    AlertEngine::evaluate();
+    T::same('watch', AlertEngine::publicState()['level'], 'and the warning stands down to a watch');
+
+    Settings::put(['venue_lat' => 41.3608, 'venue_lon' => -74.2854]);
+}
+
+T::group('Settings never quietly fall back to the shipped defaults');
+{
+    // The defaults put the venue at the demo coordinates and the provider on
+    // the simulator, which fabricates strikes. Answering with them because a
+    // query failed would invent a storm at somebody else's address. The live
+    // behaviour needs a real config file, so smoke.sh drives that; this pins
+    // down why it matters.
+    $defaults = Settings::defaults();
+    T::same('simulator', $defaults['provider'], 'the default provider is the one that fabricates strikes');
+    T::same(41.3608, $defaults['venue_lat'], 'and the default venue is the shipped demo location');
+}
+
 T::group('Housekeeping cannot cause a false all clear');
 {
     // The cooldown is decided by asking the strikes table "has anything struck

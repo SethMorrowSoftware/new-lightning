@@ -29,6 +29,10 @@ final class App
 
         try {
             self::migrateIfNeeded();
+            // Read the settings here too, so a database that fails halfway
+            // through lands on the page below rather than part-way down a
+            // rendered dashboard.
+            Settings::all();
         } catch (\Throwable $e) {
             // The driver's own words name the database, the user and the host
             // it tried — "Access denied for user 'venue_sw'@'localhost'" — and

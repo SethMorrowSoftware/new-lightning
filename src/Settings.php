@@ -174,7 +174,21 @@ final class Settings
         try {
             $rows = Database::instance()->all('SELECT skey, svalue FROM settings');
         } catch (\Throwable $e) {
-            return $values; // not installed yet
+            // Before installation there is no settings table and the defaults
+            // are the right answer. Afterwards a failed read is not "everything
+            // happens to be at its default": those defaults move the venue to
+            // the shipped demo coordinates, so every distance is measured from
+            // the wrong place, and set the provider to the simulator, which
+            // fabricates strikes. A blocked query would quietly become an
+            // invented storm at somebody else's address.
+            if (Config::isInstalled()) {
+                throw new \RuntimeException(
+                    'The settings could not be read from the database: ' . $e->getMessage(),
+                    0,
+                    $e
+                );
+            }
+            return $values;
         }
 
         foreach ($rows as $row) {
@@ -386,6 +400,10 @@ final class Settings
             return $errors;
         }
 
+        // Noted before the write, so the comparison is against what was stored.
+        $venueMoved = (isset($clean['venue_lat']) && (float) $clean['venue_lat'] !== self::getFloat('venue_lat'))
+            || (isset($clean['venue_lon']) && (float) $clean['venue_lon'] !== self::getFloat('venue_lon'));
+
         $db = Database::instance();
         $now = time();
         foreach ($clean as $key => $value) {
@@ -396,6 +414,23 @@ final class Settings
             ], 'skey');
         }
         self::flushCache();
+
+        // Every strike carries the distance it was measured at when it arrived.
+        // Correcting a mistyped coordinate would otherwise leave the alert
+        // engine holding a warning for lightning nowhere near the new location.
+        if ($venueMoved) {
+            try {
+                Strikes::recomputeDistances();
+            } catch (\Throwable $e) {
+                Events::log(
+                    'system.error',
+                    Events::SEVERITY_ERROR,
+                    'The venue moved but the stored strike distances could not be recalculated: ' . $e->getMessage(),
+                    []
+                );
+            }
+        }
+
         return [];
     }
 
