@@ -109,7 +109,11 @@ switch ($action) {
             Http::jsonError('The mapping check only applies to the REST provider.', 400);
         }
         $result = Rest::probeMapping();
-        Events::log('source.probe', $result['ok'] ? 'info' : 'warn', $result['message']);
+        Events::log(
+            'source.probe',
+            $result['ok'] ? Events::SEVERITY_INFO : Events::SEVERITY_WARNING,
+            $result['message']
+        );
         Http::json(['ok' => $result['ok'], 'message' => $result['message'], 'detail' => $result['detail']]);
 
     case 'test_source':

@@ -33,6 +33,9 @@ final class SlackNotifier implements NotifierInterface
         'is_archived' => 'That channel is archived. Pick an active one.',
         'missing_scope' => 'The app is missing the chat:write scope. Add it under OAuth & Permissions, then reinstall the app.',
         'no_permission' => 'The token does not have permission to post there. Check the app scopes.',
+        // Slack sends this one as a single word; the underscored spelling never
+        // matched anything, so the operator got the raw code instead of the hint.
+        'ratelimited' => 'Slack is rate limiting this app. Alerts will resume shortly.',
         'rate_limited' => 'Slack is rate limiting this app. Alerts will resume shortly.',
         'invalid_blocks' => 'Slack rejected the message layout. This is a bug — please report it.',
         'restricted_action' => 'Workspace settings prevent this app from posting to that channel.',

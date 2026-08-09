@@ -420,6 +420,50 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicat
 check "a kiosk token cannot perform operator actions (got HTTP ${code})" \
   "$([ "$code" = "401" ] || [ "$code" = "419" ] && echo 0 || echo 1)"
 
+# The client resumes polling from max_id, so max_id must be the last strike
+# actually handed over. Both queries behind this endpoint stop at 400 rows,
+# and the storm that fills them is exactly when the map must not skip the rest.
+group "The map does not skip strikes during a busy storm"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\{Database, Settings, Strikes, Geo};
+Settings::putRaw("display_radius_mi", 30);
+Settings::putRaw("marker_ttl_minutes", 60);
+Database::instance()->run("DELETE FROM strikes");
+$lat = Settings::getFloat("venue_lat"); $lon = Settings::getFloat("venue_lon");
+// Comfortably more than the 400-row page the endpoint serves.
+for ($i = 0; $i < 460; $i++) {
+    $p = Geo::destination($lat, $lon, ($i * 0.7919) % 360, 2 + (($i * 7) % 25));
+    Strikes::record($p["lat"], $p["lon"], time() - ($i % 30), "smoke");
+}
+echo (int) Database::instance()->value("SELECT COUNT(*) FROM strikes");
+' > "${WORK}/seeded.txt" 2>/dev/null
+STORED=$(cat "${WORK}/seeded.txt")
+check "the storm is larger than one page (${STORED} strikes stored)" \
+  "$([ "$STORED" -gt "400" ] && echo 0 || echo 1)"
+
+# Walk the incremental path the dashboard uses, from the beginning.
+SEEN=0
+CURSOR=0
+for _ in 1 2 3 4 5; do
+  curl -s -o "${WORK}/page.json" -c "$JAR" -b "$JAR" "${BASE}/api/state.php?since_id=${CURSOR}"
+  read -r COUNT NEXT <<EOF2
+$(php -r '
+$d = json_decode(file_get_contents($argv[1]), true);
+echo count($d["strikes"]), " ", $d["max_id"];' "${WORK}/page.json")
+EOF2
+  SEEN=$((SEEN + COUNT))
+  [ "$COUNT" = "0" ] && break
+  CURSOR="$NEXT"
+done
+
+check "paging through delivers every strike (${SEEN} of ${STORED})" \
+  "$([ "$SEEN" = "$STORED" ] && echo 0 || echo 1)"
+check "and the cursor ends on the last strike (${CURSOR})" \
+  "$([ -n "$CURSOR" ] && [ "$CURSOR" != "0" ] && echo 0 || echo 1)"
+
+php -r 'require "'"${ROOT}"'/src/bootstrap.php"; StormWatch\Database::instance()->run("DELETE FROM strikes");' 2>/dev/null
+
 group "Public dashboard is read only"
 # The ingest token is a write credential. A public dashboard is read only.
 php "${ROOT}/bin/stormwatch.php" set provider relay >/dev/null 2>&1
