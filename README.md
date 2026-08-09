@@ -164,6 +164,13 @@ blocked. It needs a tab left open somewhere that stays on; the venue's wall
 display is ideal. Alerts are still sent by the server, so Slack keeps working
 normally — only the data collection depends on the tab.
 
+The tab checks in every minute even when there is no lightning, and says
+whether its connection to Blitzortung is actually open. So the dashboard can
+tell the three cases apart: collecting normally, tab still there but the feed
+unreachable, and tab gone. Operating hours apply to it as they do to every
+other source — strikes are still recorded overnight for the map, but no alert
+is raised outside the venue's monitored window.
+
 **REST endpoint** — for a commercial feed with a support contract behind it.
 Configure the URL, how the API key is sent, and a dot-path mapping from the
 response to latitude, longitude and time. It works with any JSON API that
@@ -338,6 +345,13 @@ Settings → **Alert rules**. Out of the box the behaviour is:
 The settings screen prints that sentence back to you as you change the numbers,
 so there is no guessing about what the configuration adds up to.
 
+> **Strike history and the cooldown.** The all clear is decided by asking the
+> stored strikes what has struck recently, so *Keep strike history for* on the
+> System tab cannot be shorter than the cooldown — the answer would come back
+> "nothing on record", which reads as "nothing happened". Saving that
+> combination is refused, and pruning will not go under the cooldown whatever
+> the setting says.
+
 | Setting | Default | What it does |
 |---|---|---|
 | Alert radius | 10 mi | A strike inside this raises the alert |
@@ -473,6 +487,10 @@ into external monitoring.
 | Email never arrives | Switch to SMTP and use a real mailbox on the domain as the "from" address. |
 | The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |
 | Setup wizard says a folder is not writable | Set `config/` and `data/` to `0755` in File Manager. |
+| "Storm Watch cannot reach its database" on the setup page | The install is fine but the database is not answering. Correct the credentials in `config/config.php`. The wizard will not run on a live install, so it cannot be used to take the site over during an outage. |
+| "The relay tab is open but cannot reach Blitzortung" | The tab is running, but its connection to the feed is down — usually the network has started blocking port 3000. Nothing is being collected. Switch to a REST source, or get the port opened. |
+| Settings refuse to save: history shorter than the cooldown | Exactly that — see the note under Alert rules. Raise the history or shorten the cooldown. |
+| "No alert channel accepted the … notification" in the log | Slack and email both failed. The alert is held, not dropped: the next run tries again. The line above it says which channel failed and why. |
 | Sign-in keeps saying "session expired" | The app has mis-detected where it is mounted. Set `base_path` in `config/config.php` to the folder, e.g. `'/stormwatch'`. |
 | "Storm Watch needs Apache's mod_rewrite" | Exactly what it says. Ask your host to enable it, or point a document root at `public/` instead. |
 | Links in Slack or email point at the wrong address | Set **Public address of this dashboard** on the System settings tab, including the subfolder. |
@@ -489,7 +507,7 @@ statistics and the strike log are unaffected.
 ## Development
 
 ```bash
-php tests/run.php     # unit tests: geo, LZW, alert state machine, cooldown, mount detection
+php tests/run.php     # unit tests: geo, LZW, alert state machine, cooldown, mount detection, SMTP
 ./tests/smoke.sh      # end-to-end: installs into a scratch dir and drives real HTTP
 php -S localhost:8000 -t public
 
