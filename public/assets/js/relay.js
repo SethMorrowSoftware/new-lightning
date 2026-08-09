@@ -21,7 +21,17 @@
   var reconnectTimer = null;
   var queue = [];
   var flushTimer = null;
+  var posting = false;
   var stats = { received: 0, sent: 0, lastSent: null };
+
+  /* Whether the feed is actually reaching us. The tab being open is not the
+     same thing: if the venue's firewall starts dropping port 3000, this script
+     reconnects forever while the page stays up, and a check-in that only said
+     "still here" would paint the dashboard green over a feed collecting
+     nothing. */
+  function isConnected() {
+    return socket !== null && socket.readyState === 1; // OPEN
+  }
 
   // ---- LZW, matching the encoding the feed uses ----
   function lzwDecode(input) {
@@ -136,18 +146,25 @@
   /* Batch the posts. A busy cell can produce strikes faster than one request
      each would be reasonable, and the server de-duplicates anyway. */
   function flush() {
+    /* One request at a time. A busy cell can queue faster than a struggling
+       shared host answers, and without this the retry timer stacks a new POST
+       on top of every one still in flight — turning a momentary 503 into a
+       flood aimed at the server that is supposed to be raising the alarm. */
+    if (posting) return;
+
     var due = queue.length > 0
       || stats.lastSent === null
       || (Date.now() - stats.lastSent) >= HEARTBEAT_MS;
     if (!due) return;
 
     var batch = queue.splice(0, 200);
+    posting = true;
 
     fetch(config.ingestUrl, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-Ingest-Token': config.token },
-      body: JSON.stringify({ strikes: batch })
+      body: JSON.stringify({ strikes: batch, connected: isConnected() })
     })
       .then(function (response) { return response.json(); })
       .then(function (data) {
@@ -167,7 +184,8 @@
         sw.setSourceStatus(false, 'Relay could not store strikes ('
           + (error && error.message ? error.message : 'no answer from the server')
           + '); holding ' + queue.length + ' and retrying.');
-      });
+      })
+      .then(function () { posting = false; }, function () { posting = false; });
   }
 
   flushTimer = setInterval(flush, 10000);

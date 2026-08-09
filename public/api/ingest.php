@@ -82,13 +82,26 @@ if ($stored > 0 && $monitoring) {
 // miles happens a few days a month, so "strikes have arrived recently" cannot
 // tell a working relay from a tab somebody closed — and it is the tab closing
 // that stops the alerts. The check-in is the liveness signal.
+//
+// But the tab being open is not the same as the feed being connected: a
+// firewall that starts dropping port 3000 leaves the page up and reconnecting
+// for ever while it collects nothing. So the relay reports whether its socket
+// is actually open, and that is what health is recorded as. An older script
+// that does not send the flag is taken at its word only when it has delivered
+// strikes, which is proof enough on its own.
+$connected = array_key_exists('connected', $body)
+    ? (bool) $body['connected']
+    : ($records !== []);
+
 Runner::recordRun(
     'poll',
     'relay',
-    true,
+    $connected,
     $stored,
     $records === []
-        ? 'Browser relay checked in; no strikes within the display radius.'
+        ? ($connected
+            ? 'Browser relay checked in; connected, no strikes within the display radius.'
+            : 'Browser relay checked in, but its connection to Blitzortung is down and it is collecting nothing.')
         : sprintf(
             'Browser relay delivered %d record(s); stored %d.%s',
             count($records),

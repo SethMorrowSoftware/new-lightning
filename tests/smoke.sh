@@ -128,6 +128,28 @@ else
   green "the map is fitted without projecting a detached circle through the map"
 fi
 
+# More static checks on the browser code, for the same reason: the PHP suite
+# cannot execute it, and each of these is a way the page has gone quiet while
+# still looking healthy.
+if grep -q 'function (response) { clearTimeout(timer); return response; }' "${ROOT}/public/assets/js/dashboard.js"; then
+  red "the poll deadline covers the response body, not just the headers"
+else
+  green "the poll deadline covers the response body, not just the headers"
+fi
+if grep -q 'state.pollTimer = null;' "${ROOT}/public/assets/js/dashboard.js"; then
+  red "polling slows down in a hidden tab rather than stopping"
+else
+  green "polling slows down in a hidden tab rather than stopping"
+fi
+contains "${ROOT}/public/assets/js/dashboard.js" "Object.keys(state.markers).forEach" \
+  "marker expiry walks the markers, so the capped strike list cannot strand any"
+contains "${ROOT}/public/assets/js/dashboard.js" "state.clockOffset" \
+  "strike expiry uses the server clock, not the kiosk's"
+contains "${ROOT}/public/assets/js/relay.js" "connected: isConnected()" \
+  "the relay reports whether its feed is actually connected"
+contains "${ROOT}/public/assets/js/relay.js" "if (posting) return;" \
+  "the relay sends one batch at a time, so a failing host is not flooded"
+
 DASHV=$(grep -o 'js/dashboard\.js?v=[^"]*' "${WORK}/dash.html" | head -1 | sed 's/.*v=//')
 check "dashboard.js is versioned by the file itself, not a fixed number (v=${DASHV})" \
   "$([ -n "$DASHV" ] && [ "$DASHV" != "1.0.0" ] && echo 0 || echo 1)"
@@ -359,6 +381,29 @@ code=$(curl -s -o "${WORK}/ingest-beat.json" -w '%{http_code}' -H 'Content-Type:
   -H "X-Ingest-Token: ${INGEST_TOKEN}" -d '{"strikes":[]}' "${BASE}/api/ingest.php")
 status_is 200 "$code" "an empty relay check-in is accepted"
 contains "${WORK}/ingest-beat.json" '"stored":0' "and stores nothing"
+
+# The tab being open is not the feed being connected. A relay whose socket is
+# down checks in faithfully and collects nothing; calling that healthy paints
+# a green badge over a storm nobody is watching.
+curl -s -o /dev/null -H 'Content-Type: application/json' -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+  -d '{"strikes":[],"connected":false}' "${BASE}/api/ingest.php"
+DOWN=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Settings::putRaw("provider", "relay");
+$s = StormWatch\Runner::status();
+echo json_encode(["healthy" => $s["source_healthy"], "message" => $s["source_message"]]);
+')
+case "$DOWN" in
+  *'"healthy":false'*) green "a relay tab that cannot reach the feed reads unhealthy" ;;
+  *)                   red "a relay tab that cannot reach the feed reads unhealthy (got: ${DOWN})" ;;
+esac
+case "$DOWN" in
+  *"cannot reach Blitzortung"*) green "and the message says the connection is the problem" ;;
+  *)                            red "and the message says the connection is the problem (got: ${DOWN})" ;;
+esac
+
+curl -s -o /dev/null -H 'Content-Type: application/json' -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+  -d '{"strikes":[],"connected":true}' "${BASE}/api/ingest.php"
 
 BEAT=$(php -r '
 require "'"${ROOT}"'/src/bootstrap.php";

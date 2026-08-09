@@ -20,7 +20,8 @@
     lastAlertSignature: null,
     pollTimer: null,
     inFlight: null,
-    failures: 0
+    failures: 0,
+    clockOffset: 0
   };
 
   // ---------- helpers ----------
@@ -299,20 +300,43 @@
     var marker = L.marker([strike.lat, strike.lon], { icon: icon }).addTo(map);
     marker.bindPopup('<b>' + fmtDistance(strike.mi) + '</b> ' + escapeHtml(strike.dir)
       + ' of the venue<br>' + fmtClock(strike.ts));
-    state.markers[strike.id] = marker;
+    // Keep the strike time with the layer so expiry can work from the markers
+    // themselves rather than from the capped strike list.
+    state.markers[strike.id] = { marker: marker, ts: strike.ts };
   }
 
+  /* Expiry works off the server's clock, not the browser's. A kiosk mini-PC
+     with a dead CMOS battery can sit hours out, and reading its clock would
+     either clear a live storm off the map or never clear anything at all. */
+  function serverNow() {
+    return Math.floor(Date.now() / 1000) + state.clockOffset;
+  }
+
+  /* Walk the markers, not the strike list: the list is capped, and a squall
+     line overruns that cap easily. Anything trimmed off the end would keep its
+     marker on the map for ever, so the map slowly fills with strikes that
+     happened hours ago and the rings stop meaning anything. */
   function expireMarkers() {
-    var cutoff = Math.floor(Date.now() / 1000) - (boot.markerTtlMinutes * 60);
-    state.strikes.forEach(function (strike) {
-      if (strike.ts >= cutoff) return;
-      var marker = state.markers[strike.id];
-      if (marker && map) {
-        map.removeLayer(marker);
-      }
-      delete state.markers[strike.id];
+    var cutoff = serverNow() - (boot.markerTtlMinutes * 60);
+    Object.keys(state.markers).forEach(function (id) {
+      var entry = state.markers[id];
+      if (!entry || entry.ts >= cutoff) return;
+      if (entry.marker && map) map.removeLayer(entry.marker);
+      delete state.markers[id];
     });
     state.strikes = state.strikes.filter(function (s) { return s.ts >= cutoff; });
+  }
+
+  /* The cap on the strike list is a display limit, not a reason to leave
+     markers behind. Drop the markers of anything it discards. */
+  function trimStrikes(limit) {
+    if (state.strikes.length <= limit) return;
+    var dropped = state.strikes.splice(limit);
+    dropped.forEach(function (strike) {
+      var entry = state.markers[strike.id];
+      if (entry && entry.marker && map) map.removeLayer(entry.marker);
+      delete state.markers[strike.id];
+    });
   }
 
   function renderLog() {
@@ -339,10 +363,10 @@
   if (logList) logList.addEventListener('click', function (event) {
     var row = event.target.closest('.log-row');
     if (!row || !map) return;
-    var marker = state.markers[row.getAttribute('data-id')];
-    if (marker) {
-      map.setView(marker.getLatLng(), Math.max(map.getZoom(), 12));
-      marker.openPopup();
+    var entry = state.markers[row.getAttribute('data-id')];
+    if (entry && entry.marker) {
+      map.setView(entry.marker.getLatLng(), Math.max(map.getZoom(), 12));
+      entry.marker.openPopup();
     }
   });
 
@@ -603,7 +627,8 @@
     return post('clear_strikes').then(function (data) {
       if (map) {
         Object.keys(state.markers).forEach(function (id) {
-          if (state.markers[id]) map.removeLayer(state.markers[id]);
+          var entry = state.markers[id];
+          if (entry && entry.marker) map.removeLayer(entry.marker);
         });
       }
       state.markers = {};
@@ -623,24 +648,49 @@
      inside two refresh intervals and say what happened. */
   var POLL_TIMEOUT_MS = Math.max(20, Math.max(3, boot.refreshSeconds) * 2) * 1000;
 
+  /* Returns { status, ok, text }, with the deadline covering the body as well
+     as the headers.
+
+     Disarming the timer when the headers land is not enough. A shared host
+     whose PHP worker dies mid-response leaves the front end holding the
+     connection open, so the headers arrive and the body never finishes. The
+     read then waits for ever, the in-flight guard below never releases, and
+     every later tick returns the same stuck promise — the page freezes on
+     whatever it last knew, still showing a green badge, with nothing on it
+     admitting it has stopped. That is the exact failure this deadline exists
+     to prevent, so it stays armed until the last byte is in. */
   function fetchState(url) {
     var options = { credentials: 'same-origin', headers: { 'Accept': 'application/json' } };
-    if (typeof AbortController === 'undefined') return fetch(url, options);
+
+    if (typeof AbortController === 'undefined') {
+      return fetch(url, options).then(function (response) {
+        return response.text().then(function (text) {
+          return { status: response.status, ok: response.ok, text: text };
+        });
+      });
+    }
 
     var controller = new AbortController();
     options.signal = controller.signal;
-    var timer = setTimeout(function () { controller.abort(); }, POLL_TIMEOUT_MS);
-    return fetch(url, options).then(
-      function (response) { clearTimeout(timer); return response; },
-      function (error) {
-        clearTimeout(timer);
-        if (error && error.name === 'AbortError') {
-          throw new Error('The server did not answer within '
-            + Math.round(POLL_TIMEOUT_MS / 1000) + ' seconds.');
-        }
-        throw error;
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; controller.abort(); }, POLL_TIMEOUT_MS);
+
+    var finish = function () { clearTimeout(timer); };
+    var fail = function (error) {
+      finish();
+      if (timedOut || (error && error.name === 'AbortError')) {
+        throw new Error('The server did not answer within '
+          + Math.round(POLL_TIMEOUT_MS / 1000) + ' seconds.');
       }
-    );
+      throw error;
+    };
+
+    return fetch(url, options).then(function (response) {
+      return response.text().then(function (text) {
+        finish();
+        return { status: response.status, ok: response.ok, text: text };
+      }, fail);
+    }, fail);
   }
 
   /* A server error on shared hosting usually arrives as an HTML page rather
@@ -681,13 +731,18 @@
   function applyState(data) {
     var isFirstLoad = state.maxId === 0;
 
+    // Trust the server's clock over this machine's — see serverNow().
+    if (data.server_time) {
+      state.clockOffset = data.server_time - Math.floor(Date.now() / 1000);
+    }
+
     data.strikes.forEach(function (strike) {
       plotStrike(strike, !isFirstLoad);
       state.strikes.unshift(strike);
     });
     if (data.strikes.length) {
       state.strikes.sort(function (a, b) { return b.ts - a.ts || b.id - a.id; });
-      if (state.strikes.length > 300) state.strikes.length = 300;
+      trimStrikes(300);
     }
     state.maxId = Math.max(state.maxId, data.max_id || 0);
 
@@ -695,7 +750,10 @@
     renderState(data);
     renderStats(data);
     renderSource(data);
-    if (data.strikes.length || isFirstLoad) renderLog();
+    // Every poll, not only the ones that brought something. Strikes age out on
+    // a timer, and a log still listing a strike from two hours ago reads as a
+    // storm that is still going.
+    renderLog();
   }
 
   function poll() {
@@ -714,22 +772,21 @@
           window.location.href = boot.loginUrl || 'login.php';
           throw new Error('Signed out');
         }
-        return response.text().then(function (text) {
-          var data = null;
-          try { data = JSON.parse(text); } catch (e) { data = null; }
+        var text = response.text;
+        var data = null;
+        try { data = JSON.parse(text); } catch (e) { data = null; }
 
-          if (!response.ok) {
-            var reason = (data && data.error) ? data.error : snippet(text);
-            throw new Error('The server answered HTTP ' + response.status
-              + (reason ? ' — ' + reason : '.'));
-          }
-          if (data === null) {
-            var head = snippet(text);
-            throw new Error('The server\'s answer was not JSON'
-              + (head ? ' — ' + head : '.'));
-          }
-          return data;
-        });
+        if (!response.ok) {
+          var reason = (data && data.error) ? data.error : snippet(text);
+          throw new Error('The server answered HTTP ' + response.status
+            + (reason ? ' — ' + reason : '.'));
+        }
+        if (data === null) {
+          var head = snippet(text);
+          throw new Error('The server\'s answer was not JSON'
+            + (head ? ' — ' + head : '.'));
+        }
+        return data;
       })
       .then(function (data) {
         state.failures = 0;
@@ -757,19 +814,29 @@
     return request;
   }
 
+  /* Slow down when the tab is hidden — never stop.
+
+     Browser notifications exist precisely for the tab nobody is looking at: a
+     duty manager with the dashboard behind their email is the case the feature
+     was built for. Stopping the poll on hide meant the alert that mattered was
+     the one guaranteed not to be noticed, and the page then showed it as
+     "just arrived" whenever they happened to switch back. A minute between
+     polls in the background is a small cost against that. */
+  var BACKGROUND_POLL_MS = 60000;
+
   function schedule() {
     if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = setInterval(poll, Math.max(3, boot.refreshSeconds) * 1000);
+    var interval = document.hidden
+      ? Math.max(BACKGROUND_POLL_MS, Math.max(3, boot.refreshSeconds) * 1000)
+      : Math.max(3, boot.refreshSeconds) * 1000;
+    state.pollTimer = setInterval(poll, interval);
   }
 
-  // Pause polling when the tab is hidden; catch up as soon as it returns.
   document.addEventListener('visibilitychange', function () {
-    if (document.hidden) {
-      if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
-    } else {
-      poll();
-      schedule();
-    }
+    // Coming back to the tab should show current data, not the last background
+    // poll's, so catch up immediately as well as restoring the fast cadence.
+    if (!document.hidden) poll();
+    schedule();
   });
 
   // ---------- clock ----------

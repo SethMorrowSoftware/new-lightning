@@ -201,12 +201,26 @@ final class Runner
             // A tab still running an older script does not check in, so accept
             // a recently relayed strike as proof of life too.
             $freshCheckIn = $lastCheckIn !== null && ($now - $lastCheckIn) < 300;
+            // The tab being open is not the feed being connected. A relay whose
+            // socket is down checks in faithfully and collects nothing, and
+            // calling that healthy is worse than calling a working relay
+            // broken — it is a green badge over a storm nobody is watching.
+            $relayConnected = $lastIngest !== null && (int) $lastIngest['ok'] === 1;
             $freshStrike = $lastRelayAt !== null && ($now - $lastRelayAt) < 900;
-            $sourceHealthy = $freshCheckIn || $freshStrike;
+            // A recent check-in is the better evidence and settles it either
+            // way: a relay that says its socket is down is down, whatever it
+            // was delivering a few minutes ago. The strike fallback is only for
+            // a tab still running an older script, which checks in only when it
+            // has something to send.
+            $sourceHealthy = $freshCheckIn ? $relayConnected : $freshStrike;
 
             if ($lastCheckIn === null && $lastRelayAt === null) {
                 $sourceMessage = 'No browser relay has ever checked in. Open the dashboard on a machine that stays on '
                     . 'and leave the tab open.';
+            } elseif ($freshCheckIn && !$relayConnected) {
+                $sourceMessage = 'The relay tab is open but cannot reach Blitzortung, so no lightning is being '
+                    . 'collected. The feed uses port 3000 — check whether the network started blocking it, or switch '
+                    . 'to a REST source.';
             } elseif ($sourceHealthy) {
                 $sourceMessage = $lastRelayAt !== null
                     ? sprintf(
