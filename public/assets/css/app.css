@@ -287,7 +287,12 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .opacity-control{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-xs);color:var(--text-lo);}
 .opacity-control input[type=range]{width:90px;accent-color:var(--amber);}
 
-/* ---------- Stats ---------- */
+/* ---------- Stats ----------
+   Full width beneath both columns, so the row of numbers summarises the map
+   and the feed above it rather than being a fifth panel in one column. The
+   grid sits between it and the panel before, so the usual .panel + .panel
+   rule cannot reach it. */
+.stats-panel{margin-top:var(--sp-5);}
 .stat-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);}
 @media (max-width:700px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr));}}
 .stat{background:var(--bg-1);border:1px solid var(--border-soft);border-radius:var(--r-md);

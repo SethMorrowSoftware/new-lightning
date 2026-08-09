@@ -97,22 +97,6 @@ View::header('dashboard');
   <?php endif; ?>
 </div>
 
-<?php /* The four numbers are the at-a-glance layer, so they sit with the banner
-         rather than below the map — where they were under the fold on a laptop,
-         and left the whole bottom of the left column empty. */ ?>
-<div class="panel">
-  <div class="panel-title">
-    <span>Last hour</span>
-    <span class="muted" id="lastStrikeAge"></span>
-  </div>
-  <div class="stat-row">
-    <div class="stat"><div class="n" id="statTotal">0</div><div class="l">Total strikes</div></div>
-    <div class="stat"><div class="n" id="statClose">0</div><div class="l">Within <?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?></div></div>
-    <div class="stat"><div class="n" id="statNearest">—</div><div class="l">Nearest strike</div></div>
-    <div class="stat" id="statAllClearTile"><div class="n" id="statAllClear">—</div><div class="l">All clear in</div></div>
-  </div>
-</div>
-
 <div class="grid">
   <div>
     <div class="panel">
@@ -198,6 +182,21 @@ View::header('dashboard');
         <div class="log-empty">No strikes recorded yet.</div>
       </div>
     </div>
+  </div>
+</div>
+
+<?php /* Full width beneath both columns: the summary of what the map above has
+         been showing, rather than a fifth panel squeezed into one column. */ ?>
+<div class="panel stats-panel">
+  <div class="panel-title">
+    <span>Last hour</span>
+    <span class="muted" id="lastStrikeAge"></span>
+  </div>
+  <div class="stat-row">
+    <div class="stat"><div class="n" id="statTotal">0</div><div class="l">Total strikes</div></div>
+    <div class="stat"><div class="n" id="statClose">0</div><div class="l">Within <?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?></div></div>
+    <div class="stat"><div class="n" id="statNearest">—</div><div class="l">Nearest strike</div></div>
+    <div class="stat" id="statAllClearTile"><div class="n" id="statAllClear">—</div><div class="l">All clear in</div></div>
   </div>
 </div>
 
