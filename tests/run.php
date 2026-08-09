@@ -1168,6 +1168,103 @@ T::group('Simulator');
     T::near(3.0, (float) $single['distance_mi'], 0.05, 'the requested distance is honoured');
 }
 
+T::group('Email delivery over SMTP');
+{
+    // The alert email is what reaches people who are not watching Slack, and
+    // the SMTP client that sends it is hand-rolled. Drive it against something
+    // that answers like a mail server.
+    $sendVia = static function (string $mode, array $recipients): array {
+        $port = random_int(21000, 39000);
+        $transcript = sys_get_temp_dir() . '/sw-smtp-' . $port . '.json';
+        @unlink($transcript);
+        $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $process = proc_open(
+            sprintf(
+                '%s %s %d %s %s',
+                escapeshellarg(PHP_BINARY),
+                escapeshellarg(__DIR__ . '/support/smtp_server.php'),
+                $port,
+                escapeshellarg($transcript),
+                escapeshellarg($mode)
+            ),
+            $descriptors,
+            $pipes
+        );
+        if (!is_resource($process)) {
+            return ['result' => ['ok' => false, 'message' => 'server would not start'], 'seen' => []];
+        }
+        stream_set_blocking($pipes[1], true);
+        if (trim((string) fgets($pipes[1])) !== 'READY') {
+            proc_close($process);
+            return ['result' => ['ok' => false, 'message' => 'server did not come up'], 'seen' => []];
+        }
+
+        Settings::putRaw('email_transport', 'smtp');
+        Settings::putRaw('smtp_host', '127.0.0.1');
+        Settings::putRaw('smtp_port', $port);
+        Settings::putRaw('smtp_secure', 'none');
+        Settings::putRaw('smtp_user', 'alerts@example.com');
+        Settings::putRaw('smtp_pass', 'a-secret');
+        Settings::putRaw('email_from', 'stormwatch@example.com');
+        Settings::putRaw('email_from_name', 'Storm Watch');
+
+        $result = \StormWatch\Notifiers\Mailer::send(
+            $recipients,
+            'Lightning within 10 mi of Castle Fun Center',
+            "A strike has been detected inside the alert radius.\n.a line starting with a dot",
+            '<p>A strike has been detected.</p>'
+        );
+        proc_close($process);
+
+        return [
+            'result' => $result,
+            'seen' => json_decode((string) @file_get_contents($transcript), true) ?: [],
+        ];
+    };
+
+    $good = $sendVia('ok', ['ops@example.com', 'manager@example.com']);
+    T::ok($good['result']['ok'] === true, 'a straightforward send succeeds');
+    T::same(['ops@example.com', 'manager@example.com'], $good['seen']['accepted'] ?? [], 'both recipients are offered');
+    T::ok(strpos((string) ($good['seen']['body'] ?? ''), 'Subject:') !== false, 'the message carries its headers');
+    // The parts are base64, so prove the text survived the transport intact
+    // rather than eyeballing it: an off-by-one in the DATA framing or the
+    // dot-stuffing would corrupt this.
+    $wire = preg_replace('/\s+/', '', (string) ($good['seen']['body'] ?? '')) ?? '';
+    $expected = preg_replace('/\s+/', '', base64_encode(
+        "A strike has been detected inside the alert radius.\n.a line starting with a dot"
+    )) ?? '';
+    T::ok(strpos($wire, $expected) !== false, 'the plain-text body arrives byte for byte');
+    T::ok(
+        in_array('AUTH LOGIN', $good['seen']['commands'] ?? [], true),
+        'the client authenticates with LOGIN when the server offers it'
+    );
+
+    // One dud address — a typo, or someone who has left — must not stop the
+    // people whose addresses are fine from being told about the storm.
+    $partial = $sendVia('reject-one', ['ops@example.com', 'bad@example.com', 'manager@example.com']);
+    T::ok($partial['result']['ok'] === true, 'a refused recipient does not fail the whole send');
+    T::same(
+        ['ops@example.com', 'manager@example.com'],
+        $partial['seen']['accepted'] ?? [],
+        'the good addresses still receive the alert'
+    );
+    T::ok(!empty($partial['seen']['body']), 'the message body is actually transmitted');
+    T::ok(
+        strpos($partial['result']['message'], 'bad@example.com') !== false,
+        'and the operator is told which address was refused'
+    );
+
+    // A server that only speaks PLAIN must not lock the venue out of email.
+    $plain = $sendVia('auth-plain', ['ops@example.com']);
+    T::ok($plain['result']['ok'] === true, 'a PLAIN-only server is still usable');
+    T::ok(
+        count(array_filter($plain['seen']['commands'] ?? [], static fn(string $c): bool => strpos($c, 'AUTH PLAIN') === 0)) > 0,
+        'the client falls back to AUTH PLAIN when LOGIN is not offered'
+    );
+
+    Settings::putRaw('email_transport', 'mail');
+}
+
 T::group('WebSocket client');
 {
     $port = random_int(21000, 39000);
