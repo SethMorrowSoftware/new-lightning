@@ -1932,6 +1932,86 @@ T::group('Forecast card presentation');
     T::same([], $fresh['periods'], 'with nothing to show');
 }
 
+T::group('The forecast card stops at the end of the venue\'s day');
+{
+    Settings::put(['nws_enabled' => true, 'timezone' => 'America/New_York']);
+    Settings::flushCache();
+
+    // A fixed Sunday, so "how much of today is left" is a question with one
+    // answer rather than one that depends on when the suite is run.
+    $zone = new DateTimeZone('America/New_York');
+    $at = static function (string $local) use ($zone): int {
+        return (new DateTimeImmutable($local, $zone))->getTimestamp();
+    };
+
+    // Thirty hours, so the run into tomorrow morning can be tested too.
+    $hours = [];
+    for ($i = 0; $i < 30; $i++) {
+        $start = $at('2026-08-09 00:00') + ($i * 3600);
+        $hours[] = ['start' => $start, 'end' => $start + 3600, 'day' => $i >= 6 && $i < 20,
+                    'temp' => 70 + ($i % 10), 'unit' => 'F', 'pop' => null, 'short' => 'Sunny',
+                    'wind' => '', 'dir' => '', 'storm' => false];
+    }
+    $named = static function (string $name, string $from, string $to, bool $day) use ($at): array {
+        return ['name' => $name, 'start' => $at($from), 'end' => $at($to), 'day' => $day,
+                'temp' => 70, 'unit' => 'F', 'pop' => null, 'short' => 'Sunny', 'detail' => '',
+                'wind' => '', 'dir' => '', 'storm' => false];
+    };
+
+    Database::instance()->upsert('forecast_cache', [
+        'id' => 1, 'point' => '41.3608,-74.2854', 'grid' => '{"forecast":"https://api.weather.gov/x"}',
+        'grid_at' => $at('2026-08-09 12:00'), 'covered' => 1,
+        'payload' => (string) json_encode([
+            'place' => 'Chester, NY', 'office' => 'OKX', 'alerts' => [],
+            'hours' => $hours,
+            'periods' => [
+                $named('This Afternoon', '2026-08-09 12:00', '2026-08-09 18:00', true),
+                $named('Tonight', '2026-08-09 18:00', '2026-08-10 06:00', false),
+                $named('Monday', '2026-08-10 06:00', '2026-08-10 18:00', true),
+                $named('Monday Night', '2026-08-10 18:00', '2026-08-11 06:00', false),
+            ],
+        ]),
+        'fetched_at' => $at('2026-08-09 12:00'), 'attempted_at' => $at('2026-08-09 12:00'),
+        'ok' => 1, 'message' => '',
+    ], 'id');
+    Forecast::flushCache();
+
+    $names = static fn(array $summary): array => array_map(
+        static fn(array $p): string => (string) $p['name'],
+        $summary['periods']
+    );
+
+    // Mid-afternoon: ten hours of today left, and the two periods that are it.
+    $afternoon = Forecast::summary($at('2026-08-09 14:00'));
+    T::same(10, count($afternoon['hours']), 'the hourly strip stops at local midnight');
+    T::same(['This Afternoon', 'Tonight'], $names($afternoon), 'today and tonight, and no further');
+
+    // Late evening: two hours of today left is not a strip worth drawing, so it
+    // runs on into the small hours — which is still the venue's own evening.
+    $late = Forecast::summary($at('2026-08-09 22:00'));
+    T::same(6, count($late['hours']), 'a nearly-finished day is topped up to the minimum');
+    T::same(['Tonight'], $names($late), 'by the evening only tonight is left, and that is right');
+
+    // Early morning: eighteen hours of today left, capped at what the row holds.
+    $morning = Forecast::summary($at('2026-08-09 06:00'));
+    T::same(12, count($morning['hours']), 'a whole day ahead is capped rather than run on');
+
+    // The cut is on when a period starts, not when it ends: "Tonight" runs to
+    // 6am and still belongs to the day it began in.
+    $evening = Forecast::summary($at('2026-08-09 19:00'));
+    T::same(['Tonight'], $names($evening), 'a period running past midnight belongs to today');
+    T::same(
+        $at('2026-08-10 06:00'),
+        $evening['periods'][0]['end'],
+        'and it keeps its real end time rather than being clipped at midnight'
+    );
+
+    Database::instance()->run('DELETE FROM forecast_cache');
+    Forecast::flushCache();
+    Settings::put(['timezone' => 'America/New_York']);
+    Settings::flushCache();
+}
+
 T::group('Blitzortung frame decoding');
 {
     Settings::put(['venue_lat' => 41.3608, 'venue_lon' => -74.2854, 'display_radius_mi' => 30]);

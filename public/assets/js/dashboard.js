@@ -700,8 +700,11 @@
     box.hidden = false;
   }
 
-  function renderForecastPeriods(periods) {
-    var box = el('wxPeriods');
+  /* Today and tonight, as one band rather than a grid of tiles. The server
+     has already cut the list at the end of the venue's day; the full detailed
+     wording is on each band's tooltip for anyone who wants it. */
+  function renderForecastToday(periods) {
+    var box = el('wxToday');
     if (!box) return;
     if (!periods || !periods.length) {
       box.innerHTML = '';
@@ -709,19 +712,19 @@
       return;
     }
     var html = '';
-    periods.forEach(function (period) {
+    periods.forEach(function (period, index) {
       var temp = (period.temp === null || period.temp === undefined)
         ? '—'
         : period.temp + '°' + (period.unit || '');
       var pop = (period.pop === null || period.pop === undefined || period.pop === 0)
         ? ''
-        : '<span class="pp">' + period.pop + '% precip</span>';
-      html += '<div class="wx-period' + (period.storm ? ' storm' : '') + '" title="'
-        + escapeHtml(period.detail || period.short || '') + '">'
-        + '<div class="nm">' + escapeHtml(period.name || '') + '</div>'
-        + '<div class="hd"><span class="i">' + wxIcon(period.short, period.day) + '</span>'
-        + '<span class="tp">' + escapeHtml(temp) + '</span></div>'
-        + '<div class="sf">' + escapeHtml(period.short || '') + '</div>'
+        : '<span class="pp">' + period.pop + '%</span>';
+      html += '<div class="wx-part' + (index === 0 ? ' lead' : '') + (period.storm ? ' storm' : '')
+        + '" title="' + escapeHtml(period.detail || period.short || '') + '">'
+        + '<span class="i">' + wxIcon(period.short, period.day) + '</span>'
+        + '<span class="nm">' + escapeHtml(period.name || '') + '</span>'
+        + '<span class="tp">' + escapeHtml(temp) + '</span>'
+        + '<span class="sf">' + escapeHtml(period.short || '') + '</span>'
         + pop
         + '</div>';
     });
@@ -737,8 +740,8 @@
     if (place) place.textContent = forecast.place ? ' — ' + forecast.place : '';
 
     var stormy = renderForecastAlerts(forecast.alerts);
+    renderForecastToday(forecast.periods);
     renderForecastHours(forecast.hours);
-    renderForecastPeriods(forecast.periods);
 
     /* How old it is, said plainly. A card that quietly stopped updating three
        hours ago — still showing this morning's "clear" — is worse than no card
@@ -756,19 +759,20 @@
       updated.className = stale ? 'muted wx-stale' : 'muted';
     }
 
+    /* Only speaks up when there is something wrong. The attribution it used to
+       carry is in the page footer, and a permanent row of small print is a row
+       the card does not need. */
     var note = el('wxNote');
     if (note) {
+      var problem = '';
       if (!forecast.ok && forecast.message) {
-        note.textContent = forecast.message;
-        note.className = 'wx-note problem';
+        problem = forecast.message;
       } else if (stale) {
-        note.textContent = 'This forecast is out of date. It is refreshed by the scheduled task — check the '
+        problem = 'This forecast is out of date. It is refreshed by the scheduled task — check the '
           + 'data source panel below if that has stopped running.';
-        note.className = 'wx-note problem';
-      } else {
-        note.textContent = 'Forecast and warnings from the US National Weather Service.';
-        note.className = 'wx-note';
       }
+      note.textContent = problem;
+      note.hidden = problem === '';
     }
 
     card.className = 'panel wx' + (stormy ? ' has-warning' : '') + (stale ? ' is-stale' : '');
@@ -782,7 +786,7 @@
       var note = el('wxNote');
       if (note) {
         note.textContent = 'The forecast could not be displayed.';
-        note.className = 'wx-note problem';
+        note.hidden = false;
       }
     }
   }

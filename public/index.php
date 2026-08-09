@@ -104,24 +104,28 @@ View::header('dashboard');
 </div>
 
 <?php /* Directly under the alert banner and above everything else. The banner
-         answers "is it dangerous now"; this answers "what is coming", which is
-         the question behind every decision made an hour ahead — whether to run
-         the four o'clock party outside, when to start clearing the water park.
-         Watches and warnings from the National Weather Service surface at the
-         top of it, because those arrive before the first strike does. */ ?>
+         answers "is it dangerous now"; this answers "what is coming today",
+         which is the question behind every decision made an hour ahead —
+         whether to run the four o'clock party outside, when to start clearing
+         the water park. Watches and warnings surface at the top of it, because
+         those arrive before the first strike does.
+
+         It stops at the end of the day deliberately. The attribution lives in
+         the page footer and the note below only appears when something is
+         wrong, so in normal weather the card is three short rows. */ ?>
 <?php if ($showForecast): ?>
 <section class="panel wx" id="wxCard">
   <div class="panel-title">
-    <span>Weather ahead<span class="wx-place" id="wxPlace"></span></span>
-    <span class="muted" id="wxUpdated">Loading the forecast…</span>
+    <span>Today<span class="wx-place" id="wxPlace"></span></span>
+    <span class="wx-meta">
+      <span class="muted" id="wxUpdated">Loading the forecast…</span>
+      <?php if ($canAct): ?><button type="button" class="link" id="wxRefreshBtn">Refresh</button><?php endif; ?>
+    </span>
   </div>
   <div class="wx-alerts" id="wxAlerts" hidden></div>
+  <div class="wx-today" id="wxToday" hidden></div>
   <div class="wx-hours" id="wxHours" hidden></div>
-  <div class="wx-periods" id="wxPeriods" hidden></div>
-  <div class="wx-foot">
-    <span class="wx-note" id="wxNote">Forecast and warnings from the US National Weather Service.</span>
-    <?php if ($canAct): ?><button type="button" class="link" id="wxRefreshBtn">Refresh now</button><?php endif; ?>
-  </div>
+  <div class="wx-note" id="wxNote" hidden></div>
 </section>
 <?php endif; ?>
 
