@@ -351,6 +351,44 @@ minutes is too long to wait.
 
 ---
 
+## Reading the map
+
+Two things on the map are colour-coded, and they mean different things. The
+legend under it is in two labelled halves for that reason.
+
+**The dashed rings are distance** — the alert, watch and display radii, in the
+colours the legend names.
+
+**The strike markers are age.** The newest strike is bright yellow and the
+colour deepens through orange and red to a dark maroon as it gets older,
+disappearing when it passes the "keep markers" lifetime. The effect is that a
+storm's track draws itself: a tail of dark markers behind a bright head,
+pointing where the cell has come from and where it is going.
+
+There is no formal standard for this, but there is a settled convention, and
+this follows it. [Blitzortung's own maps](https://map.blitzortung.org/) — the
+network most of this app's strike data comes from — run newest-to-oldest as
+white through to dark red in twenty-minute bands, and
+[RadarScope](https://radarscope.zendesk.com/hc/en-us/articles/8990755805970-Layers)
+fades bright yellow to orange across its thirty-minute window. Anyone who has
+looked at a lightning map before can read this one without being told. It
+starts at yellow rather than white only because two of the three basemaps here
+are nearly white themselves.
+
+The bands divide the marker lifetime evenly, so the ramp always spans exactly
+as long as markers are kept: at the default hour they are twelve minutes each,
+and the legend labels itself to match whatever you set.
+
+**Strikes inside the alert radius are drawn larger, with a red ring** — the same
+red as the alert circle they are sitting in. Colour is spoken for by age, so
+"this one is close" is said with size and a ring instead. It also survives a
+cluster, which is when it matters most.
+
+Clicking a marker gives the distance, the bearing, the time and how long ago,
+worked out when you open it rather than when the marker was drawn.
+
+---
+
 ## Connecting Slack
 
 Settings → **Slack**. Bot token is the better option: one token can post to any

@@ -58,11 +58,56 @@
     return Math.floor(h / 24) + 'd';
   }
 
-  function colourForDistance(mi) {
-    if (mi <= boot.radii.alert) return '#FF4D5E';
-    if (mi <= boot.radii.watch) return '#FFB627';
-    // Furthest band tracks the basemap, for the same contrast reason as the rings.
-    return basemap.displayRing;
+  /* Strike age, newest first.
+
+     There is no formal standard for this, but there is a settled convention
+     and every lightning display worth copying follows it: the newest strike is
+     the brightest and warmest, and age carries the colour down into deep reds.
+     Blitzortung's own maps — the network most of this app's data comes from —
+     run white to dark red in twenty-minute bands, and RadarScope fades bright
+     yellow to orange across its thirty-minute window. Matching it means anyone
+     who has looked at a lightning map before can read this one without being
+     told, and the shape of a storm's track falls out of the colours for free.
+
+     It starts at yellow rather than Blitzortung's white because this map has
+     three basemaps and two of them are nearly white themselves. */
+  var AGE_COLOURS = ['#FFE14D', '#FFA62B', '#F4632B', '#D6303A', '#8E2230'];
+
+  /* Which band a strike falls in, from 0 (just now) to the last (about to
+     expire). Bands divide the marker lifetime evenly, so the ramp always spans
+     exactly as long as the markers are kept — change "keep markers" in
+     Settings and the colours stretch or compress to match. */
+  function ageBand(ts, now) {
+    var ttl = Math.max(60, boot.markerTtlMinutes * 60);
+    // A strike stamped slightly in the future — a feed running fast — is
+    // "now", not somehow older than the oldest.
+    var band = Math.floor(((now - ts) / ttl) * AGE_COLOURS.length);
+    return Math.max(0, Math.min(AGE_COLOURS.length - 1, band));
+  }
+
+  /* Colour says when. Inside the alert radius has to be said with something
+     else, so it is said with a ring — in the same red as the alert circle the
+     strike is sitting inside — and a little more size. */
+  function strikeIcon(colour, close) {
+    // Size does most of the work: it is pre-attentive, it survives a cluster
+    // of overlapping markers, and it does not compete with the age ramp for
+    // the one channel the ramp needs.
+    var bolt = close ? 19 : 14;
+    var box = close ? 25 : 16;
+    return L.divIcon({
+      className: '',
+      html: '<div class="strike-marker' + (close ? ' close' : '') + '">'
+        + '<svg width="' + bolt + '" height="' + bolt + '" viewBox="0 0 24 24">'
+        // A dark outline under the fill, so a pale band still reads on the
+        // near-white basemaps as well as on the dark one.
+        + '<path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill="none" stroke="#150E04"'
+        + ' stroke-width="3.4" stroke-linejoin="round"/>'
+        + '<path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill="' + colour + '" stroke="' + colour
+        + '" stroke-width="1.2" stroke-linejoin="round"/>'
+        + '</svg></div>',
+      iconSize: [box, box],
+      iconAnchor: [box / 2, box / 2]
+    });
   }
 
   function toast(message, kind) {
@@ -331,6 +376,31 @@
   // Radar is decoration over the top of the map; it gets the same treatment.
   try { initRadar(); } catch (radarError) { radarLayer = null; }
 
+  // ---------- legend ----------
+
+  /* The age ramp is built here rather than in the page, so the swatches can
+     only ever be the colours the markers are actually drawn in.
+
+     Labels come out of the marker lifetime, which is why they are durations
+     rather than fixed numbers: at the default hour they read now / 12m / 24m /
+     36m / 48m, and a venue that keeps markers for five minutes gets
+     now / 1m / 2m / 3m / 4m without anybody having to think about it. */
+  function renderStrikeLegend() {
+    var box = el('strikeLegend');
+    if (!box) return;
+    var step = Math.max(60, boot.markerTtlMinutes * 60) / AGE_COLOURS.length;
+    var html = '<span class="legend-label">Strikes</span>';
+    AGE_COLOURS.forEach(function (colour, index) {
+      html += '<span><i class="swatch" style="background:' + colour + '"></i>'
+        + (index === 0 ? 'now' : fmtDuration(Math.round(index * step))) + '</span>';
+    });
+    html += '<span><i class="swatch close"></i>inside ' + escapeHtml(fmtDistance(boot.radii.alert))
+      + '</span>';
+    box.innerHTML = html;
+  }
+
+  renderStrikeLegend();
+
   var opacitySlider = el('radarOpacity');
   if (opacitySlider) {
     opacitySlider.addEventListener('input', function () {
@@ -342,7 +412,9 @@
 
   function plotStrike(strike, animate) {
     if (!hasLeaflet || state.markers[strike.id]) return;
-    var colour = colourForDistance(strike.mi);
+    var close = strike.mi <= boot.radii.alert;
+    var band = ageBand(strike.ts, serverNow());
+    var colour = AGE_COLOURS[band];
 
     if (animate) {
       var flash = L.circleMarker([strike.lat, strike.lon], {
@@ -362,20 +434,18 @@
       }, 30);
     }
 
-    var icon = L.divIcon({
-      className: '',
-      html: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="' + colour
-          + '" stroke-width="2"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z" fill="' + colour
-          + '" fill-opacity="0.25"/></svg>',
-      iconSize: [16, 16],
-      iconAnchor: [8, 8]
+    var marker = L.marker([strike.lat, strike.lon], { icon: strikeIcon(colour, close) }).addTo(map);
+    // Built when it opens, not when the marker is made: "4m ago" written an
+    // hour ago is worse than no answer.
+    marker.bindPopup(function () {
+      return '<b>' + fmtDistance(strike.mi) + '</b> ' + escapeHtml(strike.dir)
+        + ' of the venue<br>' + fmtClock(strike.ts)
+        + ' · ' + fmtDuration(Math.max(0, serverNow() - strike.ts)) + ' ago';
     });
-    var marker = L.marker([strike.lat, strike.lon], { icon: icon }).addTo(map);
-    marker.bindPopup('<b>' + fmtDistance(strike.mi) + '</b> ' + escapeHtml(strike.dir)
-      + ' of the venue<br>' + fmtClock(strike.ts));
     // Keep the strike time with the layer so expiry can work from the markers
-    // themselves rather than from the capped strike list.
-    state.markers[strike.id] = { marker: marker, ts: strike.ts };
+    // themselves rather than from the capped strike list, and the band so
+    // ageing can skip the ones whose colour has not moved.
+    state.markers[strike.id] = { marker: marker, ts: strike.ts, band: band, close: close };
   }
 
   /* Expiry works off the server's clock, not the browser's. A kiosk mini-PC
@@ -390,12 +460,25 @@
      marker on the map for ever, so the map slowly fills with strikes that
      happened hours ago and the rings stop meaning anything. */
   function expireMarkers() {
-    var cutoff = serverNow() - (boot.markerTtlMinutes * 60);
+    var now = serverNow();
+    var cutoff = now - (boot.markerTtlMinutes * 60);
     Object.keys(state.markers).forEach(function (id) {
       var entry = state.markers[id];
-      if (!entry || entry.ts >= cutoff) return;
-      if (entry.marker && map) map.removeLayer(entry.marker);
-      delete state.markers[id];
+      if (!entry) return;
+      if (entry.ts < cutoff) {
+        if (entry.marker && map) map.removeLayer(entry.marker);
+        delete state.markers[id];
+        return;
+      }
+      /* Age the colour on the way past. Only when the band has actually
+         changed: setIcon rebuilds the marker's element, and doing that to
+         three hundred markers every ten seconds to paint them the colour they
+         already are is work nobody asked for. */
+      var band = ageBand(entry.ts, now);
+      if (band !== entry.band && entry.marker) {
+        entry.band = band;
+        entry.marker.setIcon(strikeIcon(AGE_COLOURS[band], entry.close));
+      }
     });
     state.strikes = state.strikes.filter(function (s) { return s.ts >= cutoff; });
   }

@@ -137,10 +137,20 @@ View::header('dashboard');
         <span class="muted" id="strikeCount">0 strikes tracked</span>
       </div>
       <div class="map-wrap"><div id="map"></div></div>
+      <?php /* Two things are colour-coded on this map and they mean different
+               things: the dashed rings are distance, the strike markers are
+               age. Saying which is which is the difference between a legend
+               and a row of dots. */ ?>
       <div class="radar-legend">
-        <span><i class="swatch" style="background:var(--danger)"></i>Within <?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?></span>
-        <span><i class="swatch" style="background:var(--amber)"></i>To <?= Http::e($fmt(Settings::getFloat('watch_radius_mi'))) ?></span>
-        <span><i class="swatch" id="ringSwatch" style="background:var(--bolt)"></i>To <?= Http::e($fmt(Settings::getFloat('display_radius_mi'))) ?></span>
+        <span class="legend-set">
+          <span class="legend-label">Rings</span>
+          <span><i class="swatch" style="background:var(--danger)"></i><?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?></span>
+          <span><i class="swatch" style="background:var(--amber)"></i><?= Http::e($fmt(Settings::getFloat('watch_radius_mi'))) ?></span>
+          <span><i class="swatch" id="ringSwatch" style="background:var(--bolt)"></i><?= Http::e($fmt(Settings::getFloat('display_radius_mi'))) ?></span>
+        </span>
+        <?php /* Filled by the dashboard script: the age ramp lives there with
+                 the markers it colours, so the two cannot drift apart. */ ?>
+        <span class="legend-set" id="strikeLegend"></span>
         <span class="grow"></span>
         <?php if (Settings::getString('radar_overlay') !== 'none'): ?>
         <label class="opacity-control" for="radarOpacity">

@@ -395,10 +395,31 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .leaflet-control-layers-expanded{padding:var(--sp-3) !important;font-size:var(--fs-sm) !important;}
 .leaflet-bar a{border-bottom-color:var(--border) !important;}
 
-.radar-legend{display:flex;gap:var(--sp-4);flex-wrap:wrap;margin-top:var(--sp-4);font-size:var(--fs-xs);color:var(--text-mid);align-items:center;}
+.radar-legend{display:flex;gap:var(--sp-5);flex-wrap:wrap;margin-top:var(--sp-4);font-size:var(--fs-xs);color:var(--text-mid);align-items:center;}
 .radar-legend span{display:inline-flex;align-items:center;gap:6px;}
-.swatch{width:9px;height:9px;border-radius:50%;display:inline-block;}
+/* Two colour languages on one map — distance for the rings, age for the
+   markers — so each gets its own labelled group rather than one undifferentiated
+   row of dots. */
+.radar-legend .legend-set{gap:var(--sp-3);flex-wrap:wrap;}
+.radar-legend .legend-label{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.6px;
+  color:var(--text-lo);font-weight:600;}
+.swatch{width:9px;height:9px;border-radius:50%;display:inline-block;flex-shrink:0;}
+/* Matches the ring drawn round a marker inside the alert radius. */
+.radar-legend .swatch.close{background:transparent;box-shadow:0 0 0 2px rgba(255,77,94,.9);
+  margin:0 3px;}
 .radar-legend .grow{flex:1;}
+
+/* Strike markers. The bolt is coloured by age; the ring says the strike landed
+   inside the alert radius, which colour can no longer say. */
+.strike-marker{width:100%;height:100%;display:flex;align-items:center;justify-content:center;}
+/* A hairline ring and nothing behind it. A filled disc with a soft glow looked
+   right on one marker and turned a cluster of close strikes — exactly when
+   this matters most — into a single pink smear with the bolts lost inside it.
+   The extra size carries the signal; the ring only has to confirm it. */
+.strike-marker.close{
+  border-radius:50%;
+  box-shadow:0 0 0 1.5px rgba(255,77,94,.95);
+}
 .opacity-control{display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-xs);color:var(--text-lo);}
 .opacity-control input[type=range]{width:90px;accent-color:var(--amber);}
 
