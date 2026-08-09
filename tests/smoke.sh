@@ -153,6 +153,8 @@ contains "${ROOT}/public/assets/js/dashboard.js" "Object.keys(state.markers).for
   "marker expiry walks the markers, so the capped strike list cannot strand any"
 contains "${ROOT}/public/assets/js/dashboard.js" "state.clockOffset" \
   "strike expiry uses the server clock, not the kiosk's"
+contains "${ROOT}/public/assets/js/dashboard.js" "rejected the last alert" \
+  "the alert-channel line reports delivery, not just configuration"
 contains "${ROOT}/public/assets/js/relay.js" "connected: isConnected()" \
   "the relay reports whether its feed is actually connected"
 contains "${ROOT}/public/assets/js/relay.js" "if (posting) return;" \

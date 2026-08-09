@@ -828,6 +828,35 @@ T::group('An alert nobody could deliver is not counted as sent');
     Settings::putRaw('slack_webhook_url', '');
 }
 
+T::group('The dashboard reports whether a channel works, not whether it is on');
+{
+    // A revoked token, or a bot removed from its channel, leaves the switch on.
+    // A green tick over that is how nobody finds out until the storm.
+    resetData();
+    Settings::putRaw('slack_webhook_url', 'https://hooks.slack.com/services/T0/B0/x');
+    Settings::put(['slack_enabled' => true, 'slack_mode' => 'webhook']);
+
+    $delivery = Runner::status()['delivery'];
+    T::same([], $delivery, 'a channel that has never been used reports nothing either way');
+
+    Events::log('slack.sent', Events::SEVERITY_INFO, 'Delivered: Posted to #ops.', []);
+    $delivery = Runner::status()['delivery'];
+    T::ok(isset($delivery['slack']) && $delivery['slack']['ok'] === true, 'a delivered alert reads healthy');
+
+    Events::log('slack.failed', Events::SEVERITY_ERROR, 'Delivery failed: The bot is not a member of that channel.', []);
+    $delivery = Runner::status()['delivery'];
+    T::ok(isset($delivery['slack']) && $delivery['slack']['ok'] === false, 'a rejected alert reads unhealthy');
+    T::ok(
+        isset($delivery['slack']) && strpos($delivery['slack']['message'], 'not a member') !== false,
+        'and carries the reason the channel gave'
+    );
+    T::ok(Runner::status()['slack_ready'], 'while the channel is still reported as configured');
+
+    Settings::put(['slack_enabled' => false]);
+    Settings::putRaw('slack_webhook_url', '');
+    resetData();
+}
+
 T::group('An address that cannot be written to is refused, not dropped');
 {
     // The mailer discards anything that will not validate. Accepting a typo

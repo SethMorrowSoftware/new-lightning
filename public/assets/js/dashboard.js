@@ -523,6 +523,24 @@
     var channels = [];
     if (source.slack_ready) channels.push('Slack');
     if (source.email_ready) channels.push('Email');
+
+    /* Being configured is not the same as working. A revoked token, or a bot
+       removed from its channel, leaves the switch on — and a green tick here
+       over a channel that has not delivered anything for weeks is how nobody
+       finds out until the storm. */
+    var delivery = source.delivery || {};
+    var broken = [];
+    if (source.slack_ready && delivery.slack && !delivery.slack.ok) broken.push('slack');
+    if (source.email_ready && delivery.email && !delivery.email.ok) broken.push('email');
+
+    if (broken.length) {
+      el('notifyDot').className = 'status-dot err';
+      var names = broken.map(function (c) { return c === 'slack' ? 'Slack' : 'Email'; });
+      el('notifyText').textContent = names.join(' and ') + ' rejected the last alert.'
+        + (broken.length === 1 ? ' ' + delivery[broken[0]].message : '');
+      return;
+    }
+
     el('notifyDot').className = 'status-dot ' + (channels.length ? 'ok' : 'warn');
     el('notifyText').textContent = channels.length
       ? 'Server alerts go to ' + channels.join(' and ') + '.'

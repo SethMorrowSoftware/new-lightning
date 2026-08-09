@@ -82,7 +82,14 @@ final class AlertEngine
             // a partial success has reached somebody, and repeating it would
             // be the alert spam the cooldown exists to prevent.
             if ($delivery['attempted'] > 0 && $delivery['delivered'] === 0) {
-                self::updateState($outcome['announced_before']);
+                // Only undo what this run wrote. Delivery takes seconds and the
+                // lock is long released, so the streaming worker may have
+                // evaluated and moved the announcement on in the meantime —
+                // restoring blindly would erase a decision somebody else made.
+                $current = self::state();
+                if ((int) ($current['notified_at'] ?? 0) === $outcome['announced_stamp']) {
+                    self::updateState($outcome['announced_before']);
+                }
                 Events::log(
                     'alert.undelivered',
                     Events::SEVERITY_ERROR,
@@ -298,6 +305,9 @@ final class AlertEngine
                 'notified_at' => $state['notified_at'],
                 'notified_nearest_mi' => $state['notified_nearest_mi'],
             ],
+            // The notified_at this run stamped, so the rollback can tell its own
+            // write from somebody else's.
+            'announced_stamp' => $now,
             'muted' => $muted,
             // Only worth a log line when the situation actually changed;
             // a mute lasts many cron ticks.

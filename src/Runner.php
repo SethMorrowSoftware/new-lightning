@@ -261,7 +261,47 @@ final class Runner
             'source_last_run' => $lastIngest !== null ? (int) $lastIngest['started_at'] : null,
             'slack_ready' => \StormWatch\Notifiers\SlackNotifier::isEnabled(),
             'email_ready' => \StormWatch\Notifiers\EmailNotifier::isEnabled(),
+            // Whether a channel is configured is not whether it works. A
+            // revoked token, or a bot removed from its channel, leaves both
+            // flags above true — and the dashboard showed a green tick over a
+            // channel that had not delivered anything for weeks.
+            'delivery' => self::deliveryHealth(),
         ];
+    }
+
+    /**
+     * The last delivery attempt on each alert channel.
+     *
+     * "Configured" and "working" are different questions and only the first was
+     * being asked. This answers the second from what actually happened, so a
+     * channel that is switched on and rejecting everything cannot sit behind a
+     * green tick until the day it matters.
+     *
+     * @return array<string,array{ok:bool,at:int,message:string}>
+     */
+    private static function deliveryHealth(): array
+    {
+        $out = [];
+        foreach (['slack', 'email'] as $channel) {
+            try {
+                $row = Database::instance()->first(
+                    'SELECT created_at, type, message FROM events
+                     WHERE type = ? OR type = ? ORDER BY id DESC LIMIT 1',
+                    [$channel . '.sent', $channel . '.failed']
+                );
+            } catch (\Throwable $e) {
+                continue;
+            }
+            if ($row === null) {
+                continue;   // never used: nothing to report either way
+            }
+            $out[$channel] = [
+                'ok' => (string) $row['type'] === $channel . '.sent',
+                'at' => (int) $row['created_at'],
+                'message' => mb_substr((string) $row['message'], 0, 200),
+            ];
+        }
+        return $out;
     }
 
     /**
