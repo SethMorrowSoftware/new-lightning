@@ -218,47 +218,114 @@
 
   var radarLayer = null;
 
+  /* Both mosaics are rebuilt about every five minutes, so there is nothing to
+     be gained by asking more often and nothing to be gained by asking less. */
+  var RADAR_REFRESH_MS = 5 * 60 * 1000;
+
   function setRadarOpacity(value) {
     boot.radar.opacity = value;
     if (radarLayer) radarLayer.setOpacity(value);
   }
 
+  /* Bring a new radar frame in over the one on screen, and drop the old one
+     only once the new one has actually painted.
+
+     Both halves of that matter. The previous version removed the old layer on
+     a blind 500ms timer, so a slow tile server left a hole where the radar had
+     been. And if the new frame never arrives — a URL the server rejects, a CDN
+     having a bad afternoon — trading a stale frame for an empty map is the
+     wrong way round: nothing is removed until at least one new tile has come
+     back, and the next cycle tries again. */
+  var radarSwap = 0;
+
+  function swapRadar(url, attribution) {
+    if (!hasLeaflet || !map) return;
+
+    var next = L.tileLayer(url, {
+      opacity: boot.radar.opacity,
+      attribution: attribution,
+      maxZoom: 15
+    });
+
+    var previous = radarLayer;
+    var token = ++radarSwap;
+    var painted = 0;
+    var settled = false;
+
+    var settle = function () {
+      if (settled) return;
+      settled = true;
+      next.off('tileload');
+
+      // Nothing came back, or a newer frame started while these tiles were in
+      // flight. Either way this one goes: adopting it now would drop a layer
+      // that is no longer the one on screen and orphan its own on the map.
+      if (painted === 0 || token !== radarSwap) {
+        if (map.hasLayer(next)) map.removeLayer(next);
+        return;
+      }
+      if (previous && map.hasLayer(previous)) map.removeLayer(previous);
+      radarLayer = next;
+      // The slider may have moved while these tiles were in flight.
+      next.setOpacity(boot.radar.opacity);
+    };
+
+    next.on('tileload', function () { painted += 1; });
+    // Leaflet fires this once every visible tile has finished, successfully or
+    // not — so a frame that fails wholesale still gets an answer here.
+    next.once('load', settle);
+    // ...but a request nothing ever answers fires nothing at all, and two
+    // stacked layers must not become permanent.
+    setTimeout(settle, 30000);
+
+    next.addTo(map);
+  }
+
+  /* The mosaic behind this URL is rebuilt every few minutes but the URL itself
+     never changes, so Leaflet re-requests nothing and the browser goes on
+     serving the copy it already has. A wall display left on this overlay was
+     showing whatever the radar looked like when the page was opened — hours
+     stale, under live strike markers, with nothing on screen saying so.
+
+     The bucket moves the URL on with the data. It is a bucket rather than a
+     plain clock reading so that two displays opened a minute apart still ask
+     for the same tiles and share a cache entry between them. */
+  function nexradUrl() {
+    return 'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png'
+      + '?v=' + Math.floor(Date.now() / RADAR_REFRESH_MS);
+  }
+
   function initRadar() {
     if (!hasLeaflet || boot.radar.type === 'none') return;
+
+    var apply;
     if (boot.radar.type === 'nexrad') {
-      radarLayer = L.tileLayer(
-        'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png',
-        { opacity: boot.radar.opacity, attribution: 'NEXRAD © Iowa Environmental Mesonet', maxZoom: 15 }
-      ).addTo(map);
+      apply = function () {
+        swapRadar(nexradUrl(), 'NEXRAD © Iowa Environmental Mesonet');
+      };
+    } else if (boot.radar.type === 'rainviewer') {
+      // RainViewer publishes a manifest of recent radar frames; use the newest.
+      apply = function () {
+        fetch('https://api.rainviewer.com/public/weather-maps.json')
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var past = (data.radar && data.radar.past) || [];
+            if (!past.length) return;
+            var frame = past[past.length - 1];
+            swapRadar(
+              (data.host || 'https://tilecache.rainviewer.com')
+                + frame.path + '/256/{z}/{x}/{y}/2/1_1.png',
+              'Radar © RainViewer'
+            );
+          })
+          .catch(function () { /* radar is decoration; never break the map over it */ });
+      };
+    } else {
       return;
     }
-    if (boot.radar.type !== 'rainviewer') return;
 
-    // RainViewer publishes a manifest of recent radar frames; use the newest.
-    var apply = function () {
-      fetch('https://api.rainviewer.com/public/weather-maps.json')
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          var past = (data.radar && data.radar.past) || [];
-          if (!past.length) return;
-          var frame = past[past.length - 1];
-          var url = (data.host || 'https://tilecache.rainviewer.com')
-            + frame.path + '/256/{z}/{x}/{y}/2/1_1.png';
-          var next = L.tileLayer(url, {
-            opacity: boot.radar.opacity,
-            attribution: 'Radar © RainViewer',
-            maxZoom: 15
-          }).addTo(map);
-          if (radarLayer) {
-            var old = radarLayer;
-            setTimeout(function () { map.removeLayer(old); }, 500);
-          }
-          radarLayer = next;
-        })
-        .catch(function () { /* radar is decoration; never break the map over it */ });
-    };
     apply();
-    setInterval(apply, 5 * 60 * 1000);
+    setInterval(apply, RADAR_REFRESH_MS);
   }
 
   // Radar is decoration over the top of the map; it gets the same treatment.
