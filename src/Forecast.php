@@ -52,9 +52,21 @@ final class Forecast
     private const STORE_HOURS = 18;
     private const STORE_PERIODS = 8;
 
-    /** Handed to the dashboard after the past has been filtered off. */
-    private const SHOW_HOURS = 12;
-    private const SHOW_PERIODS = 5;
+    /**
+     * The card stops at the end of today.
+     *
+     * Every decision it feeds is made inside the day — run the four o'clock
+     * party outside, start clearing the water park at six — and a week of
+     * tiles was most of the card's height carrying none of them.
+     */
+    private const MAX_HOURS = 12;
+    private const MAX_PERIODS = 3;
+
+    /**
+     * ...but never fewer than this many hours. At half past ten there is an
+     * hour of today left, and one chip is not worth the row it sits in.
+     */
+    private const MIN_HOURS = 6;
 
     private const MAX_ALERTS = 4;
 
@@ -327,16 +339,19 @@ final class Forecast
      * cache that has stopped updating shrinks visibly instead of showing hours
      * that have already been and gone.
      *
+     * $now is injectable so the test suite can stand at a chosen hour of the
+     * day; the day boundary below is the whole reason that matters.
+     *
      * @return array<string,mixed>|null
      */
-    public static function summary(): ?array
+    public static function summary(?int $now = null): ?array
     {
         if (!self::isEnabled()) {
             return null;
         }
 
         $row = self::row();
-        $now = time();
+        $now ??= time();
 
         if ($row === null) {
             return [
@@ -372,6 +387,8 @@ final class Forecast
             $alerts[] = $alert;
         }
 
+        $dayEnds = self::endOfLocalDay($now);
+
         return [
             'stamp' => self::stampOf($row),
             'ok' => (int) $row['ok'] === 1,
@@ -383,8 +400,16 @@ final class Forecast
             'place' => (string) ($payload['place'] ?? ''),
             'office' => (string) ($payload['office'] ?? ''),
             'alerts' => array_slice($alerts, 0, self::MAX_ALERTS),
-            'hours' => self::stillAhead((array) ($payload['hours'] ?? []), $now, self::SHOW_HOURS),
-            'periods' => self::stillAhead((array) ($payload['periods'] ?? []), $now, self::SHOW_PERIODS),
+            'hours' => self::upcoming(
+                (array) ($payload['hours'] ?? []),
+                $now,
+                $dayEnds,
+                self::MIN_HOURS,
+                self::MAX_HOURS
+            ),
+            // One period minimum: through the evening "Tonight" is the only one
+            // left, and it is the one being asked about.
+            'periods' => self::upcoming((array) ($payload['periods'] ?? []), $now, $dayEnds, 1, self::MAX_PERIODS),
         ];
     }
 
@@ -440,8 +465,19 @@ final class Forecast
 
     // ------------------------------------------------------------- helpers --
 
-    /** @param array<int,mixed> $items @return array<int,array<string,mixed>> */
-    private static function stillAhead(array $items, int $now, int $limit): array
+    /**
+     * The part of a list still to come today.
+     *
+     * The cut is on each entry's start, not its end, so a period running past
+     * midnight — which "Tonight" always does — belongs to the day it began in.
+     * $min is what stops the card emptying out as the evening wears on: once
+     * fewer than that many entries are left in today, it carries on into
+     * tomorrow rather than showing a strip with two chips in it.
+     *
+     * @param array<int,mixed> $items
+     * @return array<int,array<string,mixed>>
+     */
+    private static function upcoming(array $items, int $now, int $dayEnds, int $min, int $max): array
     {
         $out = [];
         foreach ($items as $item) {
@@ -452,12 +488,35 @@ final class Forecast
             if ($end !== null && $end <= $now) {
                 continue;
             }
+            $start = isset($item['start']) && is_int($item['start']) ? $item['start'] : null;
+            if ($start !== null && $start >= $dayEnds && count($out) >= $min) {
+                break;
+            }
             $out[] = $item;
-            if (count($out) >= $limit) {
+            if (count($out) >= $max) {
                 break;
             }
         }
         return $out;
+    }
+
+    /**
+     * Midnight at the end of the venue's own day, not UTC's. A venue in New
+     * York closing at eleven is still in Sunday when the server has been in
+     * Monday for four hours.
+     */
+    private static function endOfLocalDay(int $now): int
+    {
+        try {
+            $zone = Schedule::timezone();
+        } catch (\Throwable $e) {
+            $zone = new \DateTimeZone('UTC');
+        }
+        return (new \DateTimeImmutable('@' . $now))
+            ->setTimezone($zone)
+            ->setTime(0, 0)
+            ->modify('+1 day')
+            ->getTimestamp();
     }
 
     /**

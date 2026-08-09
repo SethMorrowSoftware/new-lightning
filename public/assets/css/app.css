@@ -256,10 +256,16 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 
 /* ---------- Forecast card ----------
    Sits between the alert banner and the map: the banner says whether it is
-   dangerous now, this says what is coming. Wide, dense and readable from a
-   few feet away, because the decisions it feeds — run the four o'clock party
-   outside, start clearing the water park — are made standing up. */
-.panel.wx{position:relative;overflow:hidden;margin-bottom:var(--sp-5);}
+   dangerous now, this says what is coming today. Three short rows at most —
+   warnings, today and tonight, then the hours — because it sits above the
+   map and every pixel it takes is a pixel of the map somebody scrolls past.
+   Readable from a few feet away, because the decisions it feeds are made
+   standing up. */
+.panel.wx{position:relative;overflow:hidden;margin-bottom:var(--sp-5);
+  padding:var(--sp-4) var(--sp-5);}
+.panel.wx .panel-title{margin-bottom:var(--sp-3);}
+.wx-meta{display:inline-flex;align-items:baseline;gap:var(--sp-3);}
+.panel-title .link:disabled{opacity:.5;cursor:not-allowed;}
 .panel.wx::before{
   content:"";position:absolute;left:0;right:0;top:0;height:2px;
   background:linear-gradient(90deg,var(--bolt),transparent 55%);opacity:.55;
@@ -271,12 +277,12 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .panel.wx.is-stale{border-color:var(--amber-dim);}
 .wx-place{color:var(--text-lo);font-weight:400;text-transform:none;letter-spacing:0;}
 .panel-title .muted.wx-stale{color:var(--amber);}
-/* The three sections below are flex and grid containers, and a class selector
-   out-ranks the browser's own [hidden] rule — so an empty one kept its margins
-   and left a band of nothing across the card. Say it again, louder. */
-.wx-alerts[hidden], .wx-hours[hidden], .wx-periods[hidden]{display:none;}
+/* The sections below are flex containers, and a class selector out-ranks the
+   browser's own [hidden] rule — so an empty one kept its margins and left a
+   band of nothing across the card. Say it again, louder. */
+.wx-alerts[hidden], .wx-hours[hidden], .wx-today[hidden]{display:none;}
 
-.wx-alerts{display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-4);}
+.wx-alerts{display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-3);}
 .wx-alert{
   display:flex;align-items:baseline;gap:var(--sp-3);flex-wrap:wrap;
   padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
@@ -293,6 +299,31 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .wx-alert.low{border-color:rgba(111,227,255,.3);background:rgba(111,227,255,.06);}
 .wx-alert.low .ev{color:var(--bolt);}
 
+/* Today and tonight, as one band. Two horizontal strips that sit side by side
+   on a desktop and stack on a phone — the same information the five-tile grid
+   carried, in a third of the height. */
+.wx-today{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-bottom:var(--sp-3);}
+.wx-part{
+  flex:1 1 280px;min-width:0;display:flex;align-items:center;gap:var(--sp-3);
+  padding:var(--sp-2) var(--sp-3);border-radius:var(--r-md);
+  background:var(--bg-1);border:1px solid var(--border-soft);
+}
+.wx-part .i{color:var(--text-mid);line-height:0;flex-shrink:0;}
+.wx-part .i svg{width:24px;height:24px;display:block;}
+.wx-part .nm{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.6px;
+  color:var(--text-lo);font-weight:600;white-space:nowrap;}
+.wx-part .tp{font-family:var(--font-mono);font-size:var(--fs-md);color:var(--text-hi);
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;white-space:nowrap;}
+/* One line, clipped. The full wording is on the tooltip, and a band that grows
+   a second line pushes the map down for a wordier-than-usual afternoon. */
+.wx-part .sf{font-size:var(--fs-sm);color:var(--text-mid);flex:1;min-width:0;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.wx-part .pp{font-size:var(--fs-xs);color:var(--bolt);white-space:nowrap;
+  font-variant-numeric:tabular-nums;}
+.wx-part.lead .tp{font-size:var(--fs-lg);}
+.wx-part.storm{border-color:var(--amber-dim);background:rgba(255,182,39,.06);}
+.wx-part.storm .i{color:var(--amber);}
+
 /* Hour by hour. Scrolls sideways on a phone rather than wrapping into a
    block that has to be read rather than scanned. */
 .wx-hours{display:flex;gap:var(--sp-2);overflow-x:auto;padding-bottom:var(--sp-2);}
@@ -300,8 +331,8 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .wx-hours::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
 .wx-hours::-webkit-scrollbar-track{background:transparent;}
 .wx-hour{
-  flex:0 0 auto;width:62px;display:flex;flex-direction:column;align-items:center;gap:3px;
-  padding:var(--sp-3) var(--sp-1);border-radius:var(--r-md);
+  flex:1 0 58px;display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:var(--sp-2) var(--sp-1);border-radius:var(--r-md);
   background:var(--bg-1);border:1px solid var(--border-soft);
 }
 .wx-hour .h{font-size:var(--fs-2xs);color:var(--text-lo);text-transform:uppercase;
@@ -314,39 +345,28 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .wx-hour.storm{border-color:var(--amber-dim);background:rgba(255,182,39,.08);}
 .wx-hour.storm .i{color:var(--amber);}
 
-.wx-periods{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
-  gap:var(--sp-3);margin-top:var(--sp-4);}
-.wx-period{background:var(--bg-1);border:1px solid var(--border-soft);border-radius:var(--r-md);
-  padding:var(--sp-3) var(--sp-4);}
-.wx-period .nm{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.6px;
-  color:var(--text-lo);font-weight:600;}
-.wx-period .hd{display:flex;align-items:center;gap:var(--sp-2);margin:var(--sp-2) 0;}
-.wx-period .i{color:var(--text-mid);line-height:0;}
-.wx-period .i svg{width:24px;height:24px;display:block;}
-.wx-period .tp{font-family:var(--font-mono);font-size:var(--fs-lg);color:var(--text-hi);
-  font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
-/* Clamped so a wordy period ("Showers and thunderstorms likely, then a chance
-   of showers after 2am") cannot make its tile twice the height of its
-   neighbours. The full sentence is on the tile's tooltip. */
-.wx-period .sf{font-size:var(--fs-xs);color:var(--text-mid);line-height:1.45;
-  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
-.wx-period .pp{display:inline-block;margin-top:var(--sp-2);font-size:var(--fs-2xs);color:var(--bolt);}
-.wx-period.storm{border-color:var(--amber-dim);background:rgba(255,182,39,.06);}
-.wx-period.storm .i{color:var(--amber);}
-
-.wx-foot{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);
-  margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--border-soft);}
-.wx-note{font-size:var(--fs-xs);color:var(--text-lo);line-height:1.55;max-width:var(--measure);}
-.wx-note.problem{color:var(--amber);}
-.wx-foot .link{background:none;border:0;padding:0;font-family:inherit;font-size:var(--fs-xs);
-  color:var(--text-lo);cursor:pointer;white-space:nowrap;}
-.wx-foot .link:hover{color:var(--text-hi);}
-.wx-foot .link:disabled{opacity:.5;cursor:not-allowed;}
+/* Only rendered when something is wrong — see renderForecast(). */
+.wx-note{font-size:var(--fs-xs);color:var(--amber);line-height:1.55;max-width:var(--measure);
+  margin-top:var(--sp-3);padding-top:var(--sp-3);border-top:1px solid var(--border-soft);}
 
 @media (max-width:640px){
-  .wx-hour{width:56px;}
+  /* Scrolling beats squeezing: twelve chips shrunk to fit a phone are twelve
+     chips nobody can read. */
+  .wx-hour{flex:0 0 56px;}
   .wx-alert .ev{font-size:var(--fs-base);}
-  .wx-foot{flex-wrap:wrap;}
+  /* The affected counties took a line of their own on a phone, and the alert
+     was returned because it covers this venue — that is the only part of the
+     answer anybody here needs. */
+  .wx-alert .ar{display:none;}
+  /* "Showers and thunderstorms likely" clipped to "Showe…" is the one thing on
+     the band worth reading. Give it the width of the row and let it wrap,
+     with the numbers pulled up beside the label. */
+  .wx-part{flex-wrap:wrap;gap:var(--sp-2) var(--sp-3);}
+  .wx-part .i{order:0;}
+  .wx-part .nm{order:1;}
+  .wx-part .tp{order:2;}
+  .wx-part .pp{order:3;margin-left:auto;}
+  .wx-part .sf{order:4;flex-basis:100%;white-space:normal;overflow:visible;line-height:1.4;}
 }
 
 /* ---------- Map ---------- */

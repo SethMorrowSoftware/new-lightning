@@ -297,16 +297,28 @@ decide things an hour ahead — whether to run the four o'clock party outside,
 when to start clearing the water park — and for that they need to know what is
 coming.
 
-The card sits directly under the alert banner, above the map, and shows three
-things:
+The card sits directly under the alert banner, above the map, and covers
+**today and no further** — the decisions it feeds are all made inside the day,
+and a week of tiles was most of its height carrying none of them.
 
 - **Watches, warnings and advisories in force at the venue.** A Severe
   Thunderstorm Warning turns the whole card red; a watch or advisory turns it
   amber. These arrive before the first strike does, which is the point of them.
-- **The next twelve hours** — temperature, chance of precipitation, and a mark
-  on any hour with thunder in it.
-- **The day-by-day outlook** for the next few periods, with the full detailed
-  forecast on each tile's tooltip.
+  Only shown when there are any.
+- **Today and tonight**, on one line each: temperature, the short forecast, and
+  the chance of precipitation. The full detailed wording is on the tooltip.
+- **The rest of the day, hour by hour** — temperature, chance of precipitation,
+  and an amber mark on any hour with thunder in it.
+
+"Today" means the venue's own day, in its own time zone, and the cut is on when
+a period *starts* — so "Tonight" runs to six in the morning and still belongs to
+the day it began in. Late in the evening, when there would be an hour or two of
+today left, the hourly strip carries on to a minimum of six hours rather than
+showing a nearly empty row.
+
+In calm weather the whole card is two rows. There is no permanent line of small
+print under it: the attribution is in the page footer, and the card only writes
+below the hours when something is wrong.
 
 It comes from the **US National Weather Service** (`api.weather.gov`), which is
 free, needs no account and has no API key. It covers the United States and its
