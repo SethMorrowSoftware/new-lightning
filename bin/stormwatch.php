@@ -5,6 +5,7 @@
  *   php bin/stormwatch.php status
  *   php bin/stormwatch.php test-slack
  *   php bin/stormwatch.php test-source
+ *   php bin/stormwatch.php forecast [--refresh]
  *   php bin/stormwatch.php simulate [miles]
  *   php bin/stormwatch.php set <key> <value>
  *   php bin/stormwatch.php get [key]
@@ -21,6 +22,7 @@ use StormWatch\Auth;
 use StormWatch\Config;
 use StormWatch\Database;
 use StormWatch\Events;
+use StormWatch\Forecast;
 use StormWatch\Geo;
 use StormWatch\Notifiers\EmailNotifier;
 use StormWatch\Notifiers\SlackNotifier;
@@ -83,7 +85,46 @@ switch ($command) {
         out('Feed         ' . ($status['source_healthy'] ? 'ok' : 'PROBLEM') . ' — ' . $status['source_message']);
         out('Slack        ' . (SlackNotifier::isEnabled() ? 'enabled' : 'off'));
         out('Email        ' . (EmailNotifier::isEnabled() ? 'enabled' : 'off'));
+        out('Forecast     ' . Forecast::describe());
         exit($status['cron_healthy'] && $status['source_healthy'] ? 0 : 1);
+
+    case 'forecast':
+        if (in_array('--refresh', $args, true)) {
+            $result = Forecast::refresh();
+            out(($result['ok'] ? 'OK: ' : 'FAILED: ') . $result['message']);
+            if (!$result['ok']) {
+                exit(1);
+            }
+        }
+        $summary = Forecast::summary();
+        if ($summary === null) {
+            out('The forecast card is switched off. Turn it on under Settings → Venue & map,');
+            out('or run: php bin/stormwatch.php set nws_enabled true');
+            exit(0);
+        }
+        out('Forecast     ' . Forecast::describe());
+        out('Location     ' . ($summary['place'] !== '' ? $summary['place'] : '(not resolved yet)')
+            . ($summary['office'] !== '' ? '  office ' . $summary['office'] : ''));
+        if ($summary['message'] !== '') {
+            out('Note         ' . $summary['message']);
+        }
+        if ($summary['alerts'] === []) {
+            out('Alerts       none in force');
+        }
+        foreach ($summary['alerts'] as $alert) {
+            out('Alert        ' . strtoupper((string) $alert['severity']) . '  ' . $alert['event']
+                . ($alert['expires'] !== null ? '  until ' . gmdate('Y-m-d H:i', (int) $alert['expires']) . ' UTC' : ''));
+        }
+        foreach ($summary['periods'] as $period) {
+            out(sprintf(
+                '%-13s %s  %s%s',
+                mb_substr((string) $period['name'], 0, 13),
+                $period['temp'] === null ? '   ' : str_pad((string) $period['temp'] . '°' . $period['unit'], 5),
+                (string) $period['short'],
+                $period['pop'] ? '  (' . $period['pop'] . '%)' : ''
+            ));
+        }
+        exit($summary['ok'] ? 0 : 1);
 
     case 'test-slack':
         $result = SlackNotifier::sendTest();
@@ -199,6 +240,6 @@ switch ($command) {
     default:
         out('Unknown command: ' . $command);
         out('');
-        out('Commands: status, test-slack, test-email, test-source, simulate, get, set, passwd, prune');
+        out('Commands: status, test-slack, test-email, test-source, forecast, simulate, get, set, passwd, prune');
         exit(1);
 }

@@ -28,6 +28,7 @@ Storm Watch keeps the demo's design and moves the work to the server:
 | Settings | `localStorage` on one device | Database-backed, shared by everyone, secrets encrypted |
 | Access | Anyone with the URL | Accounts, sessions, CSRF, login throttling |
 | Health | None | Feed and cron monitoring that alerts you when data stops |
+| What is coming | Nothing | A National Weather Service forecast card, with watches and warnings, at the top of the dashboard |
 
 The original demo file is kept in the repository for reference.
 
@@ -289,6 +290,55 @@ dashboard says the same thing instead of showing a misleading green banner.
 
 ---
 
+## The forecast card
+
+Lightning detection answers "is it dangerous right now". Staff also have to
+decide things an hour ahead — whether to run the four o'clock party outside,
+when to start clearing the water park — and for that they need to know what is
+coming.
+
+The card sits directly under the alert banner, above the map, and shows three
+things:
+
+- **Watches, warnings and advisories in force at the venue.** A Severe
+  Thunderstorm Warning turns the whole card red; a watch or advisory turns it
+  amber. These arrive before the first strike does, which is the point of them.
+- **The next twelve hours** — temperature, chance of precipitation, and a mark
+  on any hour with thunder in it.
+- **The day-by-day outlook** for the next few periods, with the full detailed
+  forecast on each tile's tooltip.
+
+It comes from the **US National Weather Service** (`api.weather.gov`), which is
+free, needs no account and has no API key. It covers the United States and its
+territories; anywhere else the first lookup returns "not one of my grid squares"
+and the card says so, stops asking, and can be switched off.
+
+Settings → **Venue & map** → **Forecast card**:
+
+| Setting | Default | What it does |
+|---|---|---|
+| Show the forecast on the dashboard | on | Hides the card entirely when off, and stops the cron job fetching. |
+| Refresh every | 10 minutes | How often the cron tick asks for new data. |
+| Contact for api.weather.gov | blank | Sent in the `User-Agent`, as the service asks, so they can get in touch rather than block you. Falls back to the "from" address on the Email tab. |
+
+**How the refreshing works.** The cron tick fetches the forecast and stores it;
+the dashboard only ever reads that stored copy. Two reasons: a page load must
+never sit waiting on somebody else's server, and a wall display polling every
+ten seconds must not turn into ten-second polling of a free public API. The
+dashboard poll carries a stamp of what it is already showing, so the forecast
+travels down the wire only when it has actually changed.
+
+The fetch happens **after** the tick has released its lock, so a slow answer
+from `api.weather.gov` can never delay the next minute's lightning check. If
+the service is unreachable the card keeps the last copy it had and says how old
+it is, in amber, with the reason underneath — a card that quietly stopped
+updating three hours ago is worse than no card at all.
+
+Signed-in staff get a **Refresh now** link on the card for the times when ten
+minutes is too long to wait.
+
+---
+
 ## Connecting Slack
 
 Settings → **Slack**. Bot token is the better option: one token can post to any
@@ -457,6 +507,8 @@ unreadable.
 php bin/stormwatch.php status        # health summary; exits non-zero if unhealthy
 php bin/stormwatch.php test-slack    # post a test message
 php bin/stormwatch.php test-source   # check the configured feed
+php bin/stormwatch.php forecast      # print the cached NWS forecast and any alerts
+php bin/stormwatch.php forecast --refresh   # fetch it again first
 php bin/stormwatch.php simulate 4    # store a strike 4 miles out
 php bin/stormwatch.php get           # print every setting
 php bin/stormwatch.php set alert_radius_mi 8
@@ -486,6 +538,8 @@ into external monitoring.
 | No strikes appear at all | Often there is simply no lightning within 30 miles. Press **Simulate strike** to confirm the pipeline works. |
 | Email never arrives | Switch to SMTP and use a real mailbox on the domain as the "from" address. |
 | The map is blank but everything else works | Leaflet is loaded from a CDN your network blocks. See below. |
+| The forecast card says "not refreshing" | The cron job has stopped, or the host cannot reach `api.weather.gov`. The line under the card is the real reason. `php bin/stormwatch.php forecast --refresh` prints it directly. |
+| The forecast card says the location is not covered | The National Weather Service only forecasts for the United States and its territories. Switch the card off on the Venue & map tab; the radar overlay on the map still works worldwide. |
 | Setup wizard says a folder is not writable | Set `config/` and `data/` to `0755` in File Manager. |
 | "Storm Watch cannot reach its database" on the setup page | The install is fine but the database is not answering. Correct the credentials in `config/config.php`. The wizard will not run on a live install, so it cannot be used to take the site over during an outage. |
 | "The relay tab is open but cannot reach Blitzortung" | The tab is running, but its connection to the feed is down — usually the network has started blocking port 3000. Nothing is being collected. Switch to a REST source, or get the port opened. |
@@ -537,15 +591,17 @@ tests/       unit tests and the end-to-end smoke test
 
 The `src/` classes worth knowing: `AlertEngine` holds the state machine,
 `Strikes` is the store and its de-duplication, `Runner` orchestrates the cron
-jobs, `Settings` is the schema-driven configuration, and `Providers/` plus
-`WebSocket/` contain the feed clients.
+jobs, `Settings` is the schema-driven configuration, `Forecast` is the National
+Weather Service client and its cache, `Fetch` is the outbound HTTP GET they
+share, and `Providers/` plus `WebSocket/` contain the feed clients.
 
 ---
 
 ## Credits
 
 Strike data from the [Blitzortung.org](https://www.blitzortung.org/) volunteer
-network — if you rely on it, consider hosting a receiver. Map tiles ©
-OpenStreetMap contributors and CARTO. Radar from
-[RainViewer](https://www.rainviewer.com/) or the Iowa Environmental Mesonet.
-Maps rendered with [Leaflet](https://leafletjs.com/).
+network — if you rely on it, consider hosting a receiver. Forecasts, watches and
+warnings from the [US National Weather Service](https://www.weather.gov/documentation/services-web-api),
+a public-domain service of NOAA. Map tiles © OpenStreetMap contributors and
+CARTO. Radar from [RainViewer](https://www.rainviewer.com/) or the Iowa
+Environmental Mesonet. Maps rendered with [Leaflet](https://leafletjs.com/).

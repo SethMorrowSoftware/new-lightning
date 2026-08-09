@@ -36,7 +36,7 @@ if (!isset($tabs[$tab])) {
 $tabFields = [
     'venue' => ['venue_name', 'venue_address', 'venue_lat', 'venue_lon', 'timezone', 'units',
                 'map_zoom', 'map_style', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds',
-                'marker_ttl_minutes'],
+                'marker_ttl_minutes', 'nws_enabled', 'nws_refresh_minutes', 'nws_contact'],
     'alerts' => ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
                  'cooldown_scope', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
                  'notify_all_clear', 'notify_errors', 'monitor_schedule_enabled',
@@ -276,6 +276,46 @@ View::header('settings');
           <label for="marker_ttl_minutes">Keep markers (min)</label>
           <input type="number" id="marker_ttl_minutes" name="marker_ttl_minutes" min="1" max="720" value="<?= Http::e($value('marker_ttl_minutes')) ?>" class="<?= $errorClass('marker_ttl_minutes') ?>">
           <?= $errorNote('marker_ttl_minutes') ?>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Forecast card</div>
+      <p class="field-note" style="margin-top:0;">
+        The card at the top of the dashboard: the next twelve hours, the day-by-day outlook, and any
+        watches, warnings or advisories in force at the venue. It comes from the US National Weather
+        Service, which is free and needs no account — and covers the United States and its territories
+        only. Elsewhere the card will say so and stop asking.
+      </p>
+      <div class="toggle-row">
+        <div>
+          <div class="lbl">Show the forecast on the dashboard</div>
+          <div class="sub">
+            Fetched by the scheduled task and cached, so opening the dashboard never waits on
+            api.weather.gov. Current status: <?= Http::e(\StormWatch\Forecast::describe()) ?>.
+          </div>
+        </div>
+        <label class="switch"><input type="checkbox" name="nws_enabled"<?= $checked('nws_enabled') ?>><span class="slider"></span></label>
+      </div>
+      <div class="field-grid2">
+        <div class="field">
+          <label for="nws_refresh_minutes">Refresh every (minutes)</label>
+          <input type="number" id="nws_refresh_minutes" name="nws_refresh_minutes" min="5" max="180" value="<?= Http::e($value('nws_refresh_minutes')) ?>" class="<?= $errorClass('nws_refresh_minutes') ?>">
+          <?= $errorNote('nws_refresh_minutes') ?>
+          <div class="field-note">
+            The forecast text is reissued about hourly, but warnings appear the moment they are
+            issued and are fetched on this same cadence — so shorter is better than longer.
+          </div>
+        </div>
+        <div class="field">
+          <label for="nws_contact">Contact for api.weather.gov</label>
+          <input type="text" id="nws_contact" name="nws_contact" value="<?= Http::e($value('nws_contact')) ?>" placeholder="ops@yourvenue.com" class="<?= $errorClass('nws_contact') ?>">
+          <?= $errorNote('nws_contact') ?>
+          <div class="field-note">
+            Sent with each request, as the service asks, so they can get in touch rather than
+            simply block you. Falls back to the "from" address on the Email tab.
+          </div>
         </div>
       </div>
     </div>

@@ -144,6 +144,21 @@ final class Settings
             'radar_overlay'    => ['type' => 'enum', 'default' => 'rainviewer', 'options' => ['none', 'rainviewer', 'nexrad']],
             'radar_opacity'    => ['type' => 'int', 'default' => 55, 'min' => 5, 'max' => 100],
             'marker_ttl_minutes' => ['type' => 'int', 'default' => 60, 'min' => 1, 'max' => 720],
+
+            // ---- Forecast (National Weather Service) ----
+            // On by default: knowing a line of storms is due at four o'clock is
+            // what lets a venue move a birthday party indoors before it arrives,
+            // rather than when the first strike lands. Free, no account, United
+            // States and its territories only — outside that coverage the card
+            // says so and stops asking.
+            'nws_enabled'      => ['type' => 'bool', 'default' => true],
+            // The forecast text is reissued about hourly and amended in between;
+            // watches and warnings appear the moment they are issued, and they
+            // are fetched on this same cadence, so it is deliberately short.
+            'nws_refresh_minutes' => ['type' => 'int', 'default' => 10, 'min' => 5, 'max' => 180],
+            // api.weather.gov asks every caller to identify itself with a way to
+            // get in touch, so they can warn you before blocking you.
+            'nws_contact'      => ['type' => 'string', 'default' => '', 'max' => 160],
         ];
     }
 

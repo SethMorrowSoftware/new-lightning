@@ -119,6 +119,31 @@ final class Migrations
                     PRIMARY KEY (provider, period)
                 )$suffix");
             }],
+
+            [3, 'National Weather Service forecast cache', static function (Database $db): void {
+                $sqlite = $db->driver() === 'sqlite';
+                $int = $sqlite ? 'INTEGER' : 'BIGINT';
+                $text = $sqlite ? 'TEXT' : 'LONGTEXT';
+                $suffix = $sqlite ? '' : ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
+
+                // A single row (id = 1). The forecast is cached rather than
+                // fetched per page view because a wall display polling every
+                // ten seconds would otherwise hammer a free public API for an
+                // answer that changes about once an hour — and because a page
+                // load must never wait on somebody else's server.
+                $db->run("CREATE TABLE IF NOT EXISTS forecast_cache (
+                    id INTEGER PRIMARY KEY,
+                    point VARCHAR(64) NOT NULL DEFAULT '',
+                    grid $text NULL,
+                    grid_at $int NOT NULL DEFAULT 0,
+                    covered TINYINT NOT NULL DEFAULT 1,
+                    payload $text NULL,
+                    fetched_at $int NOT NULL DEFAULT 0,
+                    attempted_at $int NOT NULL DEFAULT 0,
+                    ok TINYINT NOT NULL DEFAULT 0,
+                    message $text NULL
+                )$suffix");
+            }],
         ];
     }
 
