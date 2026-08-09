@@ -50,7 +50,12 @@ final class App
             self::notInstalled($json);
         }
 
-        Http::startSession();
+        // A token-authenticated JSON endpoint identifies its caller from the
+        // token, so opening a session only leaves a file behind — once a
+        // minute, for ever, on a host with a shared /tmp.
+        if (!($json && $access === 'public')) {
+            Http::startSession();
+        }
 
         if ($access === 'auth') {
             $json ? Auth::requireApiLogin() : Auth::requireLogin();

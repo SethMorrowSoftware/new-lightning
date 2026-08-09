@@ -6,6 +6,11 @@
 !/data/.htaccess
 !/data/.gitkeep
 
+# Local development scratch — the dev server's pid file, and the fixture
+# endpoints tests/smoke.sh drops into the web root while it runs.
+/server.pid
+/public/smoke-*.php
+
 # Editors and OS noise
 .DS_Store
 Thumbs.db

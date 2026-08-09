@@ -37,6 +37,13 @@ status_is() { # status_is <expected> <actual> <description>
 
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
+  # One group deliberately makes data/ unreadable to simulate a dead database.
+  # Interrupt the run there and the restore below cannot put the developer's
+  # own installation back, so undo it before anything else touches the path.
+  chmod 755 "${ROOT}/data" 2>/dev/null
+  if [ -f "${WORK}/stashed.sqlite" ] && [ ! -f "${ROOT}/data/stormwatch.sqlite" ]; then
+    mv "${WORK}/stashed.sqlite" "${ROOT}/data/stormwatch.sqlite" 2>/dev/null
+  fi
   # Put back any installation that was here before the test ran.
   rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php" \
         "${ROOT}/public/smoke-echo.php" "${ROOT}/public/smoke-huge.php" \
@@ -479,7 +486,7 @@ Database::instance()->run("DELETE FROM strikes");
 $lat = Settings::getFloat("venue_lat"); $lon = Settings::getFloat("venue_lon");
 // Comfortably more than the 400-row page the endpoint serves.
 for ($i = 0; $i < 460; $i++) {
-    $p = Geo::destination($lat, $lon, ($i * 0.7919) % 360, 2 + (($i * 7) % 25));
+    $p = Geo::destination($lat, $lon, fmod($i * 0.7919, 360.0), 2 + (($i * 7) % 25));
     Strikes::record($p["lat"], $p["lon"], time() - ($i % 30), "smoke");
 }
 echo (int) Database::instance()->value("SELECT COUNT(*) FROM strikes");
@@ -532,6 +539,20 @@ code=$(curl -s -o "${WORK}/history.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "
 status_is 200 "$code" "the history page renders"
 contains "${WORK}/history.html" "Activity log" "the activity log is present"
 contains "${WORK}/history.html" "alert.warning" "the warning we triggered is logged"
+
+# "set" reported success for a setting name that does not exist, so a mistyped
+# safety setting changed nothing and said it had.
+SETBAD=$(php "${ROOT}/bin/stormwatch.php" set alert_radius_MI 4 2>&1; echo "exit=$?")
+case "$SETBAD" in
+  *"exit=1"*) green "the CLI refuses a setting name that does not exist" ;;
+  *)          red "the CLI refuses a setting name that does not exist (got: ${SETBAD})" ;;
+esac
+RADIUS=$(php "${ROOT}/bin/stormwatch.php" get alert_radius_mi 2>/dev/null | tr -d '[:space:]')
+case "$RADIUS" in
+  *4*) red "and the typo left the real setting alone (alert_radius_mi is now ${RADIUS})" ;;
+  *)   green "and the typo left the real setting alone" ;;
+esac
+php "${ROOT}/bin/stormwatch.php" set alert_radius_mi 10 >/dev/null 2>&1
 
 php "${ROOT}/bin/stormwatch.php" status >"${WORK}/cli.txt" 2>&1
 contains "${WORK}/cli.txt" "Castle Fun Center" "the CLI reports the venue"
@@ -855,10 +876,22 @@ status_is 401 "$code" "the session is gone after signing out"
 
 group "Server log"
 if grep -qiE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' "${WORK}/server.log"; then
-  red "no PHP errors were logged"
+  red "no PHP errors were logged by the web server"
   grep -iE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)' "${WORK}/server.log" | head -10 | sed 's/^/      /'
 else
-  green "no PHP errors were logged"
+  green "no PHP errors were logged by the web server"
+fi
+
+# bootstrap.php points error_log at data/php-error.log as soon as data/ is
+# writable, which is before almost everything the suite does. Anything the
+# application itself raised lands there, not in the server log above — so
+# checking only the server log was checking the one place they cannot appear.
+APP_LOG="${ROOT}/data/php-error.log"
+if [ -f "$APP_LOG" ] && grep -qiE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)|Uncaught' "$APP_LOG"; then
+  red "no PHP errors were logged by the application"
+  grep -iE 'PHP (Fatal|Parse|Warning|Notice|Deprecated)|Uncaught' "$APP_LOG" | head -10 | sed 's/^/      /'
+else
+  green "no PHP errors were logged by the application"
 fi
 
 printf '\n'

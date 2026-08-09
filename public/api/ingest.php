@@ -21,6 +21,14 @@ use StormWatch\Settings;
 
 App::boot('public', true);
 
+// A batch that raises an alert dispatches Slack and email from inside this
+// request. Both talk to remote servers that can be slow, and the default web
+// execution limit is shorter than a stalled SMTP handshake — the alert would
+// be cut off half-sent. Give it room, keep a ceiling, and finish even if the
+// relay tab navigates away mid-post.
+@set_time_limit(60);
+ignore_user_abort(true);
+
 if (!Http::isPost()) {
     Http::jsonError('This endpoint expects a POST request.', 405);
 }
