@@ -21,15 +21,49 @@ use StormWatch\View;
 Http::securityHeaders();
 Http::startSession();
 
-// If the app is already installed with an account, setup is closed.
+// If the app is already installed, setup is closed — and it stays closed
+// unless the database positively says there is nobody to lock out.
+//
+// The two answers that used to be conflated are "no accounts yet" and "no
+// answer at all", and on shared hosting the second one is routine: a MySQL
+// server having a bad afternoon, a rotated password, a data directory that
+// lost its permissions. Reading that as "nobody has signed up yet" served the
+// install wizard to anonymous visitors on a live site, where submitting it
+// would rewrite config.php, mint a fresh app key — making the stored Slack
+// token and SMTP password permanently unreadable — and create an
+// administrator account for whoever asked.
+//
+// So an installed app whose database is unreachable says exactly that and
+// offers nothing. Re-running setup deliberately is still possible; it needs
+// config/config.php to be removed first, which takes the file access that
+// re-installing ought to require.
 if (Config::isInstalled()) {
-    try {
-        if (Auth::userCount() > 0) {
-            Http::redirect('index.php');
-        }
-    } catch (\Throwable $e) {
-        // Config exists but the database does not answer — let setup continue
-        // so the operator can correct the credentials.
+    $accounts = Auth::countAccounts();
+    if ($accounts === null) {
+        View::start(['title' => 'Database unreachable', 'bodyClass' => 'centered', 'wrap' => 'wrap tight']);
+        ?>
+        <div class="card">
+          <h1 style="font-size:20px;margin-bottom:10px;">Storm Watch cannot reach its database</h1>
+          <p class="helptext">
+            This installation is already set up, so the wizard will not run. The database named in
+            <code>config/config.php</code> is not answering — a server that is down, credentials that have
+            changed, or a data directory that is no longer writable.
+          </p>
+          <p class="helptext">
+            Correct the credentials in <code>config/config.php</code> and reload this page. To install from
+            scratch instead, delete that file first — which also discards the stored Slack token and SMTP
+            password, so they will need entering again.
+          </p>
+          <p class="helptext">
+            <strong>Lightning alerts are not being sent while this is true.</strong>
+          </p>
+        </div>
+        <?php
+        View::end([], 'Storm Watch v' . SW_VERSION);
+        exit;
+    }
+    if ($accounts > 0) {
+        Http::redirect('index.php');
     }
 }
 

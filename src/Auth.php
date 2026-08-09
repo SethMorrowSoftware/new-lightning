@@ -20,10 +20,23 @@ final class Auth
 
     public static function userCount(): int
     {
+        return self::countAccounts() ?? 0;
+    }
+
+    /**
+     * How many accounts exist, or null when the database cannot say.
+     *
+     * "No accounts" and "no answer" are the same number to userCount() and
+     * must not be to anything that decides access. An unreachable database is
+     * routine on shared hosting, and reading it as "nobody has signed up yet"
+     * is how an installed site offers its setup wizard to a stranger.
+     */
+    public static function countAccounts(): ?int
+    {
         try {
             return (int) Database::instance()->value('SELECT COUNT(*) FROM users');
         } catch (\Throwable $e) {
-            return 0;
+            return null;
         }
     }
 

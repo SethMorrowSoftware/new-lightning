@@ -96,6 +96,15 @@ final class Config
      */
     public static function write(array $values): void
     {
+        // The app key is what makes the stored Slack token and SMTP password
+        // readable. Replacing an existing one turns both into noise that no
+        // error message will explain, so a re-run keeps the key it finds.
+        self::load();
+        $existingKey = (string) (self::$values['app_key'] ?? '');
+        if ($existingKey !== '' && (string) ($values['app_key'] ?? '') !== $existingKey) {
+            $values['app_key'] = $existingKey;
+        }
+
         $merged = array_merge(self::DEFAULTS, $values);
         unset($merged['db_path']); // keep the default data/ location portable across hosts
 

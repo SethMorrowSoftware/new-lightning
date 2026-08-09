@@ -504,6 +504,45 @@ status_is 404 "$code" "nothing is served outside the mount"
 
 kill "$SUB_PID" 2>/dev/null; wait "$SUB_PID" 2>/dev/null
 
+# An installed site whose database is unreachable must not offer the installer
+# to whoever asks. Submitting it would rewrite config.php, mint a fresh app key
+# — making the stored Slack token and SMTP password unreadable — and create an
+# administrator account for a stranger.
+group "Setup stays closed when the database is unreachable"
+mv "${ROOT}/data/stormwatch.sqlite" "${WORK}/stashed.sqlite"
+chmod 500 "${ROOT}/data"
+
+LOCKJAR="${WORK}/lock.txt"
+code=$(curl -s -o "${WORK}/setup-locked.html" -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" "${BASE}/setup.php")
+status_is 200 "$code" "setup.php answers while the database is down"
+if grep -qF "Set up Storm Watch" "${WORK}/setup-locked.html"; then
+  red "the install wizard is not offered to an anonymous visitor"
+else
+  green "the install wizard is not offered to an anonymous visitor"
+fi
+contains "${WORK}/setup-locked.html" "cannot reach its database" "it says what is actually wrong"
+contains "${WORK}/setup-locked.html" "alerts are not being sent" "and that alerts are not being sent"
+
+# A POST is refused just as firmly as the form is withheld.
+code=$(curl -s -o /dev/null -w '%{http_code}' -c "$LOCKJAR" -b "$LOCKJAR" \
+  -d "db_driver=sqlite" -d "username=attacker" -d "password=another-long-passphrase" \
+  -d "password_confirm=another-long-passphrase" -d "venue_name=Taken" -d "venue_lat=0" \
+  -d "venue_lon=0" -d "timezone=UTC" "${BASE}/setup.php")
+status_is 200 "$code" "a setup POST during the outage is answered, not acted on"
+
+chmod 755 "${ROOT}/data"
+mv "${WORK}/stashed.sqlite" "${ROOT}/data/stormwatch.sqlite"
+
+OWNER=$(php "${ROOT}/bin/stormwatch.php" get 2>/dev/null | head -1 >/dev/null; php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$u = StormWatch\Auth::listUsers();
+echo implode(",", array_map(static fn($r) => $r["username"], $u));
+')
+case "$OWNER" in
+  *attacker*) red "no account was created during the outage (found: ${OWNER})" ;;
+  *)          green "no account was created during the outage" ;;
+esac
+
 group "Sign out"
 curl -s -o /dev/null -c "$JAR" -b "$JAR" "${BASE}/logout.php"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/api/state.php")
