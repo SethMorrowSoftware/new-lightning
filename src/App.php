@@ -30,7 +30,16 @@ final class App
         try {
             self::migrateIfNeeded();
         } catch (\Throwable $e) {
-            self::fail('The database is not reachable: ' . $e->getMessage(), $json);
+            // The driver's own words name the database, the user and the host
+            // it tried — "Access denied for user 'venue_sw'@'localhost'" — and
+            // this page is reached before anyone has signed in. Keep the detail
+            // for the error log, where the operator can get at it.
+            error_log('[stormwatch] database unreachable: ' . $e->getMessage());
+            self::fail(
+                'The database is not reachable, so Storm Watch cannot start. The details are in the PHP error log '
+                . '(data/php-error.log on a standard install). Lightning alerts are not being sent until this is fixed.',
+                $json
+            );
         }
 
         if (Auth::userCount() === 0) {

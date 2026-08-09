@@ -38,7 +38,8 @@ status_is() { # status_is <expected> <actual> <description>
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   # Put back any installation that was here before the test ran.
-  rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php"
+  rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php" \
+        "${ROOT}/public/smoke-echo.php" "${ROOT}/public/smoke-huge.php"
   rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
   if [ -d "${WORK}/backup-data" ]; then mv "${WORK}/backup-data" "${ROOT}/data"; fi
   if [ -f "${WORK}/backup-config.php" ]; then mv "${WORK}/backup-config.php" "${ROOT}/config/config.php"; fi
@@ -614,6 +615,49 @@ echo json_encode(["ok" => $r["ok"], "records" => count($r["records"]), "message"
 contains "${WORK}/feed-good.json" '"ok":true' "the correct time path reads the feed"
 contains "${WORK}/feed-good.json" '"records":0' "and yesterday's strikes are not passed off as current"
 contains "${WORK}/feed-good.json" "freshness limit" "and the reason given is their age"
+
+# {now_iso} and {since_iso} expand to "...+00:00". A literal "+" in a query
+# string is a space by the time the endpoint reads it, so the offset is lost
+# and the request silently asks about a different hour. Have the fixture
+# report what actually arrived.
+cat > "${ROOT}/public/smoke-echo.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+echo json_encode(['seen' => $_GET, 'response' => []]);
+PHP
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-echo.php?start={since_iso}&end={now_iso}");
+$r = StormWatch\Providers\Rest::fetch();
+' >/dev/null 2>&1
+curl -s -o "${WORK}/echo.json" "${BASE}/smoke-echo.php?start=$(php -r 'echo rawurlencode(gmdate("c"));')"
+contains "${WORK}/echo.json" "+00:00" "an encoded ISO timestamp keeps its UTC offset through the query string"
+rm -f "${ROOT}/public/smoke-echo.php"
+
+# A runaway endpoint must not take the cron run down with it.
+cat > "${ROOT}/public/smoke-huge.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+echo '{"response":[';
+for ($i = 0; $i < 400; $i++) { echo str_repeat('x', 32768); }
+PHP
+HUGE=$(php -d memory_limit=64M -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-huge.php");
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "message" => substr($r["message"], 0, 120)]);
+' 2>&1)
+case "$HUGE" in
+  *'"ok":false'*) green "an oversized response is refused rather than swallowed" ;;
+  *)              red "an oversized response is refused rather than swallowed (got: ${HUGE})" ;;
+esac
+case "$HUGE" in
+  *"more than"*) green "and the operator is told the endpoint is the problem" ;;
+  *)             red "and the operator is told the endpoint is the problem (got: ${HUGE})" ;;
+esac
+rm -f "${ROOT}/public/smoke-huge.php"
 
 rm -f "${ROOT}/public/smoke-feed.php"
 php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1

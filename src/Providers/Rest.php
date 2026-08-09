@@ -445,15 +445,20 @@ final class Rest
     private static function substitute(string $url, ?float $atLat = null, ?float $atLon = null): string
     {
         $radius = self::requestRadiusMi();
+        // The ISO forms need escaping: gmdate('c') ends in "+00:00", and a
+        // literal "+" in a query string is a space by the time the endpoint
+        // reads it. The offset is silently lost, so the request asks about a
+        // different hour than intended — or is rejected outright. The numeric
+        // and coordinate values are plain digits and need nothing.
         return strtr($url, [
             '{lat}' => (string) ($atLat ?? Settings::getFloat('venue_lat')),
             '{lon}' => (string) ($atLon ?? Settings::getFloat('venue_lon')),
             '{radius_mi}' => (string) $radius,
             '{radius_km}' => (string) round($radius * Geo::MILES_TO_KM, 3),
             '{now}' => (string) time(),
-            '{now_iso}' => gmdate('c'),
+            '{now_iso}' => rawurlencode(gmdate('c')),
             '{since}' => (string) (time() - 3600),
-            '{since_iso}' => gmdate('c', time() - 3600),
+            '{since_iso}' => rawurlencode(gmdate('c', time() - 3600)),
         ]);
     }
 
@@ -574,10 +579,25 @@ final class Rest
     {
         if (function_exists('curl_init')) {
             $received = [];
+            // Stop reading at the cap rather than truncating afterwards: a
+            // misconfigured or hostile endpoint streaming hundreds of megabytes
+            // would otherwise exhaust the memory limit and kill the cron run
+            // that was meant to be watching for lightning.
+            $body = '';
+            $overLimit = false;
             $ch = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
-                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_RETURNTRANSFER => false,
+                CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$body, &$overLimit): int {
+                    $length = strlen($chunk);
+                    if (strlen($body) + $length > self::MAX_BODY_BYTES) {
+                        $overLimit = true;
+                        return 0;   // a short write aborts the transfer
+                    }
+                    $body .= $chunk;
+                    return $length;
+                },
                 CURLOPT_FOLLOWLOCATION => true,
                 CURLOPT_MAXREDIRS => 3,
                 CURLOPT_TIMEOUT => self::TIMEOUT,
@@ -595,11 +615,19 @@ final class Rest
                     return strlen($line);
                 },
             ]);
-            $body = curl_exec($ch);
+            curl_exec($ch);
             $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
             $error = curl_errno($ch) !== 0 ? curl_error($ch) : null;
             curl_close($ch);
-            return [is_string($body) ? substr($body, 0, self::MAX_BODY_BYTES) : '', $status, $error, $received];
+            if ($overLimit) {
+                // The abort surfaces as a write error; say what it really was.
+                $error = sprintf(
+                    'The endpoint returned more than %d MB, which is far more than a list of recent strikes. '
+                    . 'Check the endpoint URL and any limit parameter on it.',
+                    (int) (self::MAX_BODY_BYTES / (1024 * 1024))
+                );
+            }
+            return [$body, $status, $error, $received];
         }
 
         if (!ini_get('allow_url_fopen')) {
