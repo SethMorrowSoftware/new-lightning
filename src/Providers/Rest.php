@@ -643,7 +643,16 @@ final class Rest
                 'user_agent' => 'StormWatch/' . SW_VERSION,
             ],
         ]);
-        $body = @file_get_contents($url, false, $context, 0, self::MAX_BODY_BYTES);
+
+        // The context's 'timeout' bounds a single read, not the call. An
+        // endpoint dribbling a byte every few seconds satisfies it for ever,
+        // and file_get_contents would sit there — holding the tick lock, so
+        // every later cron minute skips out at the lock and never re-evaluates
+        // the alert state. On a REST feed that is the whole alerting path
+        // stopped by one slow server. Read it ourselves against a wall clock.
+        $startedAt = microtime(true);
+        $handle = @fopen($url, 'rb', false, $context);
+
         $status = 0;
         $received = [];
         foreach ($http_response_header ?? [] as $header) {
@@ -656,10 +665,43 @@ final class Rest
                 $received[strtolower(trim($parts[0]))] = trim($parts[1]);
             }
         }
-        if ($body === false) {
+
+        if ($handle === false) {
             return ['', $status, 'The request could not be completed.', $received];
         }
-        return [$body, $status, null, $received];
+
+        stream_set_timeout($handle, 5);
+        $body = '';
+        $timedOut = false;
+        while (!feof($handle)) {
+            if ((microtime(true) - $startedAt) > self::TIMEOUT) {
+                $timedOut = true;
+                break;
+            }
+            $chunk = fread($handle, 65536);
+            if ($chunk === false || $chunk === '') {
+                $meta = stream_get_meta_data($handle);
+                if (!empty($meta['timed_out'])) {
+                    $timedOut = true;
+                }
+                break;
+            }
+            $body .= $chunk;
+            if (strlen($body) >= self::MAX_BODY_BYTES) {
+                break;
+            }
+        }
+        fclose($handle);
+
+        if ($timedOut) {
+            return [
+                '',
+                $status,
+                sprintf('The endpoint did not finish answering within %d seconds.', self::TIMEOUT),
+                $received,
+            ];
+        }
+        return [substr($body, 0, self::MAX_BODY_BYTES), $status, null, $received];
     }
 
     /**

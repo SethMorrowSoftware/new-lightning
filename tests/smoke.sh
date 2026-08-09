@@ -39,7 +39,8 @@ cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   # Put back any installation that was here before the test ran.
   rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php" \
-        "${ROOT}/public/smoke-echo.php" "${ROOT}/public/smoke-huge.php"
+        "${ROOT}/public/smoke-echo.php" "${ROOT}/public/smoke-huge.php" \
+        "${ROOT}/public/smoke-drip.php"
   rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
   if [ -d "${WORK}/backup-data" ]; then mv "${WORK}/backup-data" "${ROOT}/data"; fi
   if [ -f "${WORK}/backup-config.php" ]; then mv "${WORK}/backup-config.php" "${ROOT}/config/config.php"; fi
@@ -747,6 +748,35 @@ case "$HUGE" in
   *)             red "and the operator is told the endpoint is the problem (got: ${HUGE})" ;;
 esac
 rm -f "${ROOT}/public/smoke-huge.php"
+
+# Without cURL the app falls back to a stream, whose context "timeout" bounds
+# a single read rather than the call. An endpoint dribbling bytes satisfies it
+# for ever — and holds the tick lock, so every later cron minute skips out and
+# the alert state is never re-evaluated. On a REST feed that is the whole
+# alerting path stopped by one slow server.
+cat > "${ROOT}/public/smoke-drip.php" <<'PHP'
+<?php
+header('Content-Type: application/json');
+// A byte every two seconds: never idle long enough to trip a read timeout.
+for ($i = 0; $i < 60; $i++) { echo ' '; flush(); sleep(2); }
+PHP
+DRIP_START=$(date +%s)
+DRIP=$(php -d allow_url_fopen=1 -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\Settings;
+Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-drip.php");
+// Force the non-cURL path by calling the stream branch directly.
+$m = new ReflectionMethod(StormWatch\Providers\Rest::class, "request");
+$m->setAccessible(true);
+$saved = null;
+[$body, $status, $error] = $m->invoke(null, Settings::getString("rest_endpoint"), ["Accept: application/json"]);
+echo json_encode(["error" => $error, "bytes" => strlen($body)]);
+' 2>&1)
+DRIP_ELAPSED=$(( $(date +%s) - DRIP_START ))
+check "a slow-drip endpoint is given up on rather than waited out (${DRIP_ELAPSED}s)" \
+  "$([ "$DRIP_ELAPSED" -lt "60" ] && echo 0 || echo 1)"
+rm -f "${ROOT}/public/smoke-drip.php"
+
 
 rm -f "${ROOT}/public/smoke-feed.php"
 php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
