@@ -38,7 +38,7 @@ status_is() { # status_is <expected> <actual> <description>
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
   # Put back any installation that was here before the test ran.
-  rm -f "${ROOT}/public/smoke-slow-probe.php"
+  rm -f "${ROOT}/public/smoke-slow-probe.php" "${ROOT}/public/smoke-feed.php"
   rm -rf "${ROOT}/data" "${ROOT}/config/config.php"
   if [ -d "${WORK}/backup-data" ]; then mv "${WORK}/backup-data" "${ROOT}/data"; fi
   if [ -f "${WORK}/backup-config.php" ]; then mv "${WORK}/backup-config.php" "${ROOT}/config/config.php"; fi
@@ -508,6 +508,65 @@ kill "$SUB_PID" 2>/dev/null; wait "$SUB_PID" 2>/dev/null
 # to whoever asks. Submitting it would rewrite config.php, mint a fresh app key
 # — making the stored Slack token and SMTP password unreadable — and create an
 # administrator account for a stranger.
+# A REST feed whose time field is mapped to the wrong key reads as "no time"
+# for every record, and every record is then stamped "now" — so an endpoint
+# that serves history delivers all of it as strikes happening this minute.
+# Drive a real endpoint rather than assert on the code.
+group "REST feed with a mis-mapped time field"
+cat > "${ROOT}/public/smoke-feed.php" <<'PHP'
+<?php
+// A fixture lightning endpoint. Two strikes near the venue, both from
+// yesterday, with the time under a key the operator has to map correctly.
+header('Content-Type: application/json');
+$yesterday = gmdate('c', time() - 86400);
+echo json_encode(['response' => [
+    ['loc' => ['lat' => 41.37, 'long' => -74.29], 'ob' => ['recordedAt' => $yesterday]],
+    ['loc' => ['lat' => 41.38, 'long' => -74.30], 'ob' => ['recordedAt' => $yesterday]],
+]]);
+PHP
+
+configureFeed() { # configureFeed <time-path>
+  php -r '
+  require "'"${ROOT}"'/src/bootstrap.php";
+  use StormWatch\Settings;
+  Settings::putRaw("provider", "rest");
+  Settings::putRaw("rest_endpoint", "http://127.0.0.1:'"${PORT}"'/smoke-feed.php");
+  Settings::putRaw("rest_auth_mode", "none");
+  Settings::putRaw("rest_map_root", "response");
+  Settings::putRaw("rest_map_lat", "loc.lat");
+  Settings::putRaw("rest_map_lon", "loc.long");
+  Settings::putRaw("rest_map_time", $argv[1]);
+  Settings::putRaw("rest_time_format", "auto");
+  Settings::putRaw("rest_max_age_minutes", 20);
+  ' "$1"
+}
+
+# The wrong key: nothing readable anywhere, so the poll must refuse.
+configureFeed "ob.timestamp"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "records" => count($r["records"]), "message" => $r["message"]]);
+' > "${WORK}/feed-bad.json"
+contains "${WORK}/feed-bad.json" '"ok":false' "a time path that matches nothing fails the poll"
+contains "${WORK}/feed-bad.json" '"records":0' "and stores nothing"
+contains "${WORK}/feed-bad.json" "could not be read" "and says the time field is the problem"
+
+# The right key: the times now read, and yesterday's strikes are correctly
+# rejected as stale rather than stamped "now".
+configureFeed "ob.recordedAt"
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Providers\Rest::fetch();
+echo json_encode(["ok" => $r["ok"], "records" => count($r["records"]), "message" => $r["message"]]);
+' > "${WORK}/feed-good.json"
+contains "${WORK}/feed-good.json" '"ok":true' "the correct time path reads the feed"
+contains "${WORK}/feed-good.json" '"records":0' "and yesterday's strikes are not passed off as current"
+contains "${WORK}/feed-good.json" "freshness limit" "and the reason given is their age"
+
+rm -f "${ROOT}/public/smoke-feed.php"
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
+
 group "Setup stays closed when the database is unreachable"
 mv "${ROOT}/data/stormwatch.sqlite" "${WORK}/stashed.sqlite"
 chmod 500 "${ROOT}/data"

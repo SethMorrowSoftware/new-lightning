@@ -187,6 +187,18 @@ T::group('Timestamp and path parsing');
     T::ok(abs(Ingest::parseTimestamp(null) - $now) < 2, 'a missing timestamp falls back to now');
     T::ok(abs(Ingest::parseTimestamp('not a date') - $now) < 2, 'an unparseable timestamp falls back to now');
 
+    // That fallback is safe for one record and dangerous for all of them: it
+    // is what turns a wrong time mapping into an endpoint's whole history
+    // arriving as strikes happening this minute. Rest::fetch tells the two
+    // apart with this.
+    T::ok(Ingest::isReadableTimestamp(1700000000, 'auto'), 'epoch seconds read cleanly');
+    T::ok(Ingest::isReadableTimestamp('2023-11-14T22:13:20Z', 'auto'), 'ISO-8601 text reads cleanly');
+    T::ok(Ingest::isReadableTimestamp('1700000000', 'epoch_s'), 'a numeric string reads cleanly');
+    T::ok(!Ingest::isReadableTimestamp(null, 'auto'), 'a missing field does not');
+    T::ok(!Ingest::isReadableTimestamp('', 'auto'), 'nor an empty one');
+    T::ok(!Ingest::isReadableTimestamp('not a date', 'auto'), 'nor unparseable text');
+    T::ok(!Ingest::isReadableTimestamp(0, 'auto'), 'nor a zero epoch');
+
     $document = ['data' => ['strikes' => [['coords' => ['lat' => 1.5, 'lon' => 2.5]]]]];
     T::same(1.5, Ingest::dotPath($document, 'data.strikes.0.coords.lat'), 'dot path with a numeric segment');
     T::ok(is_array(Ingest::dotPath($document, 'data.strikes')), 'dot path to a list');

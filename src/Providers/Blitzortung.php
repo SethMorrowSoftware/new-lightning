@@ -85,19 +85,32 @@ final class Blitzortung
                 }
 
                 $client->close();
+                // Health is "did frames arrive", not "were any of them near
+                // us". Blitzortung carries every detection on earth, so a
+                // whole minute of silence is the feed being broken, not the
+                // weather being calm — and reporting that as success leaves a
+                // green tick over a dead feed for as long as it stays dead.
                 return [
-                    'ok' => true,
+                    'ok' => $totalFrames > 0,
                     'ingested' => $totalIngested,
                     'frames' => $totalFrames,
                     'server' => $serverUsed,
-                    'message' => sprintf(
-                        'Streamed %d frame%s from %s; stored %d strike%s inside the display radius.',
-                        $totalFrames,
-                        $totalFrames === 1 ? '' : 's',
-                        $server,
-                        $totalIngested,
-                        $totalIngested === 1 ? '' : 's'
-                    ),
+                    'message' => $totalFrames > 0
+                        ? sprintf(
+                            'Streamed %d frame%s from %s; stored %d strike%s inside the display radius.',
+                            $totalFrames,
+                            $totalFrames === 1 ? '' : 's',
+                            $server,
+                            $totalIngested,
+                            $totalIngested === 1 ? '' : 's'
+                        )
+                        : sprintf(
+                            'Connected to %s but it sent nothing for %d seconds. This feed carries strikes from the '
+                            . 'whole world, so silence is the feed being down rather than calm weather. Try another '
+                            . 'server in the list, or switch to the browser relay.',
+                            $server,
+                            max(5, $seconds)
+                        ),
                 ];
             } catch (\Throwable $e) {
                 $lastError = $e->getMessage();
@@ -112,13 +125,25 @@ final class Blitzortung
             }
         }
 
+        // A mid-stream drop is routine for this feed and is not a fault as long
+        // as data was flowing. Judging that on strikes *stored* instead meant
+        // every quiet local hour ended in a "cannot reach the Blitzortung feed"
+        // alert — which is how an operator learns to ignore feed alerts.
         return [
-            'ok' => $totalIngested > 0,
+            'ok' => $totalFrames > 0,
             'ingested' => $totalIngested,
             'frames' => $totalFrames,
             'server' => $serverUsed,
-            'message' => $totalIngested > 0
-                ? sprintf('Stored %d strike(s), then lost the connection: %s', $totalIngested, $lastError)
+            'message' => $totalFrames > 0
+                ? sprintf(
+                    'Streamed %d frame%s and stored %d strike%s inside the display radius, then the connection '
+                    . 'dropped — normal for this feed, and the next run reconnects. Last error: %s',
+                    $totalFrames,
+                    $totalFrames === 1 ? '' : 's',
+                    $totalIngested,
+                    $totalIngested === 1 ? '' : 's',
+                    $lastError
+                )
                 : 'Could not stream from Blitzortung: ' . $lastError,
         ];
     }

@@ -179,6 +179,8 @@ final class Rest
         $records = [];
         $skipped = 0;
         $stale = 0;
+        $positioned = 0;      // records whose latitude and longitude read cleanly
+        $unreadableTime = 0;  // ...of which the time field could not be read
         foreach ($list as $item) {
             if (!is_array($item)) {
                 $skipped++;
@@ -196,7 +198,12 @@ final class Rest
                 $skipped++;
                 continue;
             }
-            $timestamp = Ingest::parseTimestamp(Ingest::dotPath($item, $timePath), $timeFormat);
+            $positioned++;
+            $rawTime = Ingest::dotPath($item, $timePath);
+            if (!Ingest::isReadableTimestamp($rawTime, $timeFormat)) {
+                $unreadableTime++;
+            }
+            $timestamp = Ingest::parseTimestamp($rawTime, $timeFormat);
 
             // Some endpoints happily return history. Storing it would raise an
             // alert for a storm that finished hours ago.
@@ -206,6 +213,26 @@ final class Rest
             }
 
             $records[] = ['lat' => $lat, 'lon' => $lon, 'ts' => $timestamp];
+        }
+
+        // A time path pointing at the wrong key reads as nothing for every
+        // record, and every record is then stamped "now" — so an endpoint that
+        // serves history delivers all of it as strikes happening this minute,
+        // and the venue is cleared for a storm that ended last week. One record
+        // missing a timestamp is a data quirk; all of them is a mapping error,
+        // and it has to be said rather than silently invented around.
+        if ($positioned > 0 && $unreadableTime === $positioned) {
+            return self::failure(
+                sprintf(
+                    'The time field "%s" could not be read on any of the %d record%s returned, so there is no way to '
+                    . 'tell a strike from this minute from one last week. Check the time path against the response '
+                    . 'shape — "Verify the mapping" below prints a real record. Nothing was stored.',
+                    $timePath === '' ? '(root)' : $timePath,
+                    $positioned,
+                    $positioned === 1 ? '' : 's'
+                ),
+                $status
+            );
         }
 
         if ($records === [] && $list !== []) {
