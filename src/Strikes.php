@@ -252,22 +252,42 @@ final class Strikes
         $db = Database::instance();
         $updated = 0;
 
-        foreach ($db->all('SELECT id, lat, lon FROM strikes') as $row) {
-            $lat = (float) $row['lat'];
-            $lon = (float) $row['lon'];
-            $db->run(
-                'UPDATE strikes SET distance_mi = ?, bearing_deg = ? WHERE id = ?',
-                [
-                    Geo::distanceMiles($venueLat, $venueLon, $lat, $lon),
-                    Geo::bearingDegrees($venueLat, $venueLon, $lat, $lon),
-                    (int) $row['id'],
-                ]
-            );
-            $updated++;
+        // Three days of a busy season is a lot of rows, and on SQLite an
+        // unwrapped UPDATE is its own transaction and its own fsync. One
+        // transaction turns a settings save that would appear to hang into a
+        // save that returns.
+        $ownTransaction = !$db->pdo()->inTransaction();
+        if ($ownTransaction) {
+            $db->pdo()->beginTransaction();
         }
 
-        // Anything now outside the display radius was never meant to be kept.
-        $db->run('DELETE FROM strikes WHERE distance_mi > ?', [Settings::getFloat('display_radius_mi')]);
+        try {
+            foreach ($db->all('SELECT id, lat, lon FROM strikes') as $row) {
+                $lat = (float) $row['lat'];
+                $lon = (float) $row['lon'];
+                $db->run(
+                    'UPDATE strikes SET distance_mi = ?, bearing_deg = ? WHERE id = ?',
+                    [
+                        Geo::distanceMiles($venueLat, $venueLon, $lat, $lon),
+                        Geo::bearingDegrees($venueLat, $venueLon, $lat, $lon),
+                        (int) $row['id'],
+                    ]
+                );
+                $updated++;
+            }
+
+            // Anything now outside the display radius was never meant to be kept.
+            $db->run('DELETE FROM strikes WHERE distance_mi > ?', [Settings::getFloat('display_radius_mi')]);
+
+            if ($ownTransaction) {
+                $db->pdo()->commit();
+            }
+        } catch (\Throwable $e) {
+            if ($ownTransaction && $db->pdo()->inTransaction()) {
+                $db->pdo()->rollBack();
+            }
+            throw $e;
+        }
 
         return $updated;
     }
