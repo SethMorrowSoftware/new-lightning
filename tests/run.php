@@ -727,6 +727,94 @@ T::group('Closing time honours a mute');
     T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
 }
 
+T::group('An alert nobody could deliver is not counted as sent');
+{
+    // The decision is recorded before delivery is attempted — that is what
+    // stops two overlapping cron runs sending the same alert twice. It also
+    // means a Slack outage during the one storm of the summer would file the
+    // warning as announced and never mention it again.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'notify_all_clear' => true,
+    ]);
+    // A Slack channel that is switched on and cannot possibly deliver. The
+    // secret goes in first: the cross-field rules refuse to enable a webhook
+    // with no URL behind it, which is the whole save rejected.
+    Settings::putRaw('slack_webhook_url', 'https://hooks.slack.example.invalid/services/nope');
+    T::same([], Settings::put(['slack_enabled' => true, 'slack_mode' => 'webhook']), 'the channel saves');
+
+    T::ok(SlackNotifier::isEnabled(), 'the failing channel counts as enabled');
+
+    placeStrike(4.0, 44.0);
+    AlertEngine::evaluate();
+    T::ok(count(Events::recent(200, 'slack.failed')) >= 1, 'the delivery failure is logged');
+    T::ok(count(Events::recent(200, 'alert.undelivered')) >= 1, 'and the alert is marked as held, not sent');
+
+    $state = AlertEngine::state();
+    T::same(null, $state['notified_level'], 'the announcement is rolled back so the next run retries');
+
+    // The storm is still going, so the retry has something to announce. Switch
+    // the broken channel off — as an operator would once they saw the log —
+    // and the held warning goes out on the next tick rather than being lost.
+    // (No live endpoint is contacted: this suite must not depend on one.)
+    Settings::put(['slack_enabled' => false]);
+    $before = count(Events::recent(200, 'alert.warning'));
+    AlertEngine::evaluate();
+    T::ok(
+        count(Events::recent(200, 'alert.warning')) > $before,
+        'the held warning is announced again on the next run rather than lost'
+    );
+    T::same(
+        'warning',
+        (string) AlertEngine::state()['notified_level'],
+        'and stays announced once it has been'
+    );
+
+    Settings::putRaw('slack_webhook_url', '');
+}
+
+T::group('An address that cannot be written to is refused, not dropped');
+{
+    // The mailer discards anything that will not validate. Accepting a typo
+    // here means an address that is never written to and never mentioned
+    // again, while the dashboard goes on reporting email ready.
+    Settings::put(['email_enabled' => false]);
+    $errors = Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'stormwatch@example.com',
+        'email_to' => 'ops@example.com, manager@example, gm@example.com',
+    ]);
+    T::ok(isset($errors['email_to']), 'a malformed recipient is refused');
+    T::ok(
+        isset($errors['email_to']) && strpos($errors['email_to'], 'manager@example') !== false,
+        'and the message names the address that is wrong'
+    );
+
+    $errors = Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'not-an-address',
+        'email_to' => 'ops@example.com',
+    ]);
+    T::ok(isset($errors['email_from']), 'a malformed "from" address is refused too');
+
+    T::same([], Settings::put([
+        'email_enabled' => true,
+        'email_from' => 'stormwatch@example.com',
+        'email_to' => 'ops@example.com, gm@example.com',
+    ]), 'a good pair saves');
+    T::ok(\StormWatch\Notifiers\EmailNotifier::isEnabled(), 'and email reports ready');
+
+    // Nothing deliverable means not ready, whatever the switch says.
+    Settings::putRaw('email_to', 'nobody@, also-bad');
+    Settings::flushCache();
+    T::ok(!\StormWatch\Notifiers\EmailNotifier::isEnabled(),
+        'a list of nothing but typos does not report ready');
+
+    Settings::putRaw('email_to', '');
+    Settings::put(['email_enabled' => false]);
+}
+
 T::group('Attributing a request to an address');
 {
     // Behind a proxy, X-Forwarded-For is a list and only its last entry was

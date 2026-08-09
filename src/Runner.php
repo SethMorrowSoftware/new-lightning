@@ -383,9 +383,20 @@ final class Runner
                 continue;
             }
             try {
-                $notifier::send($alert);
+                $result = $notifier::send($alert);
             } catch (\Throwable $e) {
-                // Nothing useful to do if the failure notice itself fails.
+                $result = ['ok' => false, 'message' => $e->getMessage()];
+            }
+            // There is nothing to retry here, but "we tried to tell you the
+            // feed was down and could not" is exactly what somebody wants to
+            // find in the log afterwards.
+            if (!$result['ok']) {
+                Events::log(
+                    $notifier::channel() . '.failed',
+                    Events::SEVERITY_ERROR,
+                    'The feed-failure notice could not be delivered: ' . $result['message'],
+                    ['kind' => Alert::KIND_ERROR]
+                );
             }
         }
     }

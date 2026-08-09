@@ -266,12 +266,42 @@ final class Mailer
         return sprintf('%s <%s>', self::encodeHeader($name), $from);
     }
 
+    /**
+     * RFC 2047 encoded-words for a header that is not plain ASCII.
+     *
+     * The limit is 75 characters per word including the delimiters, and a
+     * venue name with accents in it passes that easily. A single over-long
+     * word is not merely untidy: strict servers fold it themselves, in the
+     * middle of base64, and the subject arrives as mojibake — on the one
+     * message somebody needed to read at a glance.
+     */
     private static function encodeHeader(string $value): string
     {
         if (preg_match('/^[\x20-\x7E]*$/', $value)) {
             return $value;
         }
-        return '=?UTF-8?B?' . base64_encode($value) . '?=';
+
+        // 75 less "=?UTF-8?B?" and "?=", rounded down to a multiple of 4 so
+        // each word is whole base64; that is 12 raw bytes per group of 16.
+        $chunk = 45;
+        $words = [];
+        $buffer = '';
+        foreach (mb_str_split($value, 1, 'UTF-8') as $character) {
+            // Split on characters, never inside one, or the decoded halves are
+            // invalid UTF-8 on their own.
+            if (strlen($buffer . $character) > $chunk) {
+                $words[] = '=?UTF-8?B?' . base64_encode($buffer) . '?=';
+                $buffer = '';
+            }
+            $buffer .= $character;
+        }
+        if ($buffer !== '') {
+            $words[] = '=?UTF-8?B?' . base64_encode($buffer) . '?=';
+        }
+
+        // Folded with CRLF + space, which is how a decoder is told to join
+        // adjacent encoded-words without inserting a space between them.
+        return implode("\r\n ", $words);
     }
 
     private static function ehloName(): string

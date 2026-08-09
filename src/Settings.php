@@ -385,8 +385,28 @@ final class Settings
             }
         }
         if (!empty($merged['email_enabled'])) {
-            if (self::listFrom((string) $merged['email_to']) === []) {
+            $addresses = self::listFrom((string) $merged['email_to']);
+            if ($addresses === []) {
                 $errors['email_to'] = 'Add at least one recipient address.';
+            } else {
+                // The mailer drops anything that will not validate, so a typo
+                // here becomes an address that is never written to and never
+                // mentioned again — while the dashboard goes on reporting email
+                // ready. Refuse it at the point somebody can still see it.
+                $bad = array_values(array_filter(
+                    $addresses,
+                    static fn(string $a): bool => filter_var($a, FILTER_VALIDATE_EMAIL) === false
+                ));
+                if ($bad !== []) {
+                    $errors['email_to'] = sprintf(
+                        'These do not look like email addresses: %s. Alerts sent to them would be dropped silently.',
+                        implode(', ', $bad)
+                    );
+                }
+            }
+            if (trim((string) $merged['email_from']) !== ''
+                && filter_var(trim((string) $merged['email_from']), FILTER_VALIDATE_EMAIL) === false) {
+                $errors['email_from'] = 'The "from" address is not a valid email address, so nothing would be sent.';
             }
             if ($merged['email_transport'] === 'smtp' && trim((string) $merged['smtp_host']) === '') {
                 $errors['smtp_host'] = 'An SMTP host is required when the SMTP transport is selected.';

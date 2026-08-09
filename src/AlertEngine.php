@@ -68,7 +68,29 @@ final class AlertEngine
         // and the decision is already durable — no other process will send
         // this alert — so there is nothing to gain by holding it.
         if ($outcome['alert'] !== null) {
-            self::dispatch($outcome['alert']);
+            $delivery = self::dispatch($outcome['alert']);
+
+            // The decision was recorded before delivery was attempted, which is
+            // what stops two overlapping cron runs sending the same alert
+            // twice. It also means an alert nobody could deliver is filed as
+            // announced: a Slack outage or a refused SMTP login during the one
+            // storm of the summer, and the venue is never told at all, because
+            // the next tick sees the warning as already given.
+            //
+            // So when every enabled channel failed, put the announcement back
+            // and let the next run try again. Only when *every* one failed —
+            // a partial success has reached somebody, and repeating it would
+            // be the alert spam the cooldown exists to prevent.
+            if ($delivery['attempted'] > 0 && $delivery['delivered'] === 0) {
+                self::updateState($outcome['announced_before']);
+                Events::log(
+                    'alert.undelivered',
+                    Events::SEVERITY_ERROR,
+                    'No alert channel accepted the ' . $outcome['alert']->kind
+                        . ' notification, so it is being held for the next run rather than counted as sent.',
+                    []
+                );
+            }
         } elseif (!empty($outcome['log_suppression'])) {
             Events::log(
                 'alert.suppressed',
@@ -269,6 +291,13 @@ final class AlertEngine
 
         return [
             'alert' => $deliver ? $alert : null,
+            // What the announcement state was before this run touched it, so
+            // an alert nobody could deliver can be un-announced and retried.
+            'announced_before' => [
+                'notified_level' => $state['notified_level'],
+                'notified_at' => $state['notified_at'],
+                'notified_nearest_mi' => $state['notified_nearest_mi'],
+            ],
             'muted' => $muted,
             // Only worth a log line when the situation actually changed;
             // a mute lasts many cron ticks.
@@ -444,8 +473,13 @@ final class AlertEngine
         $alert->struckAt = (int) $strike['struck_at'];
     }
 
-    /** Send an alert through every enabled channel and log the outcome. */
-    public static function dispatch(Alert $alert): void
+    /**
+     * Send an alert through every enabled channel and log the outcome.
+     *
+     * @return array{attempted:int,delivered:int} so the caller can tell "sent"
+     *         from "nobody was listening" from "everything refused it"
+     */
+    public static function dispatch(Alert $alert): array
     {
         $severity = $alert->isCritical() ? Events::SEVERITY_CRITICAL : Events::SEVERITY_INFO;
         Events::log('alert.' . $alert->kind, $severity, $alert->title, [
@@ -454,15 +488,22 @@ final class AlertEngine
             'bearing_deg' => $alert->bearingDeg,
         ]);
 
+        $attempted = 0;
+        $delivered = 0;
+
         foreach ([SlackNotifier::class, EmailNotifier::class] as $notifier) {
             /** @var class-string<\StormWatch\Notifiers\NotifierInterface> $notifier */
             if (!$notifier::isEnabled()) {
                 continue;
             }
+            $attempted++;
             try {
                 $result = $notifier::send($alert);
             } catch (\Throwable $e) {
                 $result = ['ok' => false, 'message' => $e->getMessage()];
+            }
+            if ($result['ok']) {
+                $delivered++;
             }
             Events::log(
                 $notifier::channel() . '.' . ($result['ok'] ? 'sent' : 'failed'),
@@ -471,6 +512,8 @@ final class AlertEngine
                 ['kind' => $alert->kind]
             );
         }
+
+        return ['attempted' => $attempted, 'delivered' => $delivered];
     }
 
     /**
