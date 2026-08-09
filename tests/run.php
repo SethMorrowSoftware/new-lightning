@@ -769,15 +769,24 @@ T::group('The stylesheet is a system, not a pile of values');
     );
 }
 
-T::group('The dashboard leads with the numbers');
+T::group('The dashboard summary spans both columns');
 {
-    // The four statistics are the at-a-glance layer. They used to sit below
-    // the map, under the fold on a laptop, while the whole bottom of the left
-    // column stood empty.
+    // The four statistics summarise what the map and the feed above them have
+    // been showing, so they run the full width underneath rather than being a
+    // fifth panel squeezed into one column — which is what left the bottom of
+    // the left column empty in the first place.
     $dash = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
     $stats = strpos($dash, 'id="statAllClear"');
     $map = strpos($dash, 'id="map"');
-    T::ok($stats !== false && $map !== false && $stats < $map, 'the statistics come before the map');
+    // The strike log is the last thing inside the grid, so anything after it
+    // is outside both columns.
+    $lastInGrid = strpos($dash, 'id="logList"');
+    T::ok($stats !== false && $map !== false && $stats > $map, 'the statistics come after the map');
+    T::ok(
+        $lastInGrid !== false && $stats > $lastInGrid,
+        'and after the grid closes, so they span both columns'
+    );
+    T::ok(strpos($dash, 'class="panel stats-panel"') !== false, 'the summary panel is marked for its own spacing');
 
     $js = (string) file_get_contents(dirname(__DIR__) . '/public/assets/js/dashboard.js');
     // Rows move the map, so reaching one used to need a mouse.
