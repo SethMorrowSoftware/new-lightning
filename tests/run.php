@@ -727,6 +727,40 @@ T::group('Closing time honours a mute');
     T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
 }
 
+T::group('Attributing a request to an address');
+{
+    // Behind a proxy, X-Forwarded-For is a list and only its last entry was
+    // written by the proxy — everything left of it is whatever the client
+    // typed. Trusting the leftmost made the sign-in throttle both useless
+    // (a fresh forged address every attempt) and a weapon (eight attempts
+    // carrying the duty manager's address lock the duty manager out).
+    $saved = $_SERVER;
+    $withProxy = static function (bool $trusted, ?string $header, string $remote): string {
+        Config::override(['trusted_proxy' => $trusted]);
+        $_SERVER['REMOTE_ADDR'] = $remote;
+        if ($header === null) {
+            unset($_SERVER['HTTP_X_FORWARDED_FOR']);
+        } else {
+            $_SERVER['HTTP_X_FORWARDED_FOR'] = $header;
+        }
+        return \StormWatch\Http::clientIp();
+    };
+
+    T::same('198.51.100.7', $withProxy(false, '203.0.113.9', '198.51.100.7'),
+        'without a trusted proxy the header is ignored entirely');
+    T::same('10.0.0.7', $withProxy(true, '203.0.113.9, 198.51.100.4, 10.0.0.7', '172.16.0.1'),
+        'with one, the address the proxy wrote is used, not the one the client sent');
+    T::same('198.51.100.4', $withProxy(true, '203.0.113.9, 198.51.100.4, not-an-ip', '172.16.0.1'),
+        'a junk final entry falls back to the next real one');
+    T::same('172.16.0.1', $withProxy(true, 'garbage', '172.16.0.1'),
+        'an unusable header falls back to the connecting address');
+    T::same('172.16.0.1', $withProxy(true, null, '172.16.0.1'),
+        'and so does a missing one');
+
+    $_SERVER = $saved;
+    Config::override(['trusted_proxy' => false]);
+}
+
 T::group('Correcting the venue coordinates re-measures the strikes');
 {
     // Distance is worked out once, when a strike arrives, and stored. So a
