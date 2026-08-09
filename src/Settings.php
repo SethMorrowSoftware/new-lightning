@@ -302,6 +302,26 @@ final class Settings
         if (isset($clean['timezone']) && !in_array($clean['timezone'], timezone_identifiers_list(), true)) {
             $errors['timezone'] = 'Unknown time zone. Use an identifier such as America/New_York.';
         }
+        // Strike history is not just a map: it is where the cooldown reads
+        // "has anything struck recently". Keep less of it than the cooldown
+        // spans and the answer becomes "nothing on record", which reads as
+        // "nothing happened" — an all clear issued mid-storm. Strikes::prune()
+        // enforces a floor regardless, but silently keeping more than was asked
+        // for is its own kind of wrong, so say so instead.
+        $cooldownHours = (int) ceil(((int) $merged['all_clear_minutes']) / 60);
+        if ((int) $merged['retention_hours'] < $cooldownHours) {
+            $field = isset($clean['all_clear_minutes']) ? 'all_clear_minutes' : 'retention_hours';
+            $errors[$field] = sprintf(
+                'Strike history is kept for %d hour%s but the cooldown spans %d minutes. The all clear is decided '
+                . 'from stored strikes, so a shorter history would end the hold early. Keep history for at least '
+                . '%d hour%s (System tab), or shorten the cooldown.',
+                (int) $merged['retention_hours'],
+                (int) $merged['retention_hours'] === 1 ? '' : 's',
+                (int) $merged['all_clear_minutes'],
+                $cooldownHours,
+                $cooldownHours === 1 ? '' : 's'
+            );
+        }
         // A watch ring larger than the endpoint will answer for is not a
         // cosmetic problem: strikes in the gap are never fetched, so the system
         // stays green through a storm it cannot see. The display ring may

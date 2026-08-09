@@ -623,6 +623,50 @@ T::group('Alert cooldown');
     $applyCooldown(30);
 }
 
+T::group('Housekeeping cannot cause a false all clear');
+{
+    // The cooldown is decided by asking the strikes table "has anything struck
+    // inside the radius in the last N minutes?". Prune the table faster than
+    // that and the answer becomes "nothing on record" — which reads exactly
+    // like "nothing happened", and the venue is told it is safe to go back out
+    // while the storm is still overhead.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 120, 'cooldown_scope' => 'alert', 'notify_all_clear' => true,
+        'marker_ttl_minutes' => 60,
+    ]);
+    Settings::putRaw('retention_hours', 1);   // deliberately shorter than the cooldown
+
+    placeStrike(5.0, 15.0);
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'a nearby strike raises the warning');
+
+    // 70 minutes later: past the 1-hour retention, well short of the 2-hour hold.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (70 * 60)]);
+    Strikes::prune();
+    T::same(1, Strikes::stats(86400)['total'], 'prune keeps a strike the cooldown is still counting');
+
+    AlertEngine::evaluate();
+    T::same('warning', AlertEngine::publicState()['level'], 'the hold survives a prune mid-storm');
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no all clear is invented from a pruned table');
+
+    // Past the cooldown, the all clear is real and the row can go.
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (200 * 60)]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'the all clear still arrives once the hold expires');
+    T::ok(Strikes::prune() > 0, 'and the strike is prunable once nothing needs it');
+
+    // The operator is told rather than silently given a longer history.
+    Settings::putRaw('retention_hours', 72);
+    $errors = Settings::put(['all_clear_minutes' => 120, 'retention_hours' => 1]);
+    T::ok(isset($errors['all_clear_minutes']) || isset($errors['retention_hours']),
+        'a history shorter than the cooldown is refused with an explanation');
+
+    T::same([], Settings::put(['all_clear_minutes' => 30, 'retention_hours' => 72]),
+        'a sensible pair still saves');
+}
+
 T::group('Operating hours');
 {
     Settings::put([

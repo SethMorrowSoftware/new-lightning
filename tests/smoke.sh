@@ -318,6 +318,73 @@ code=$(curl -s -o "${WORK}/ingest.json" -w '%{http_code}' -H 'Content-Type: appl
 status_is 200 "$code" "ingest accepts the right token"
 contains "${WORK}/ingest.json" '"stored":1' "only the strike inside the display radius is stored"
 
+# The relay posts from a browser tab that nobody closes at night. Outside the
+# venue's hours those strikes must still be stored — the map and history stay
+# complete — but they must not raise an alert, or the tab and the cron job
+# take turns raising and standing down a warning every minute until morning.
+group "Relay ingest respects operating hours"
+countAlerts() { # the log is shared with the rest of the suite, so compare a delta
+  php -r '
+  require "'"${ROOT}"'/src/bootstrap.php";
+  use StormWatch\Events;
+  echo count(array_filter(Events::recent(500, "alert."), static fn($r) => $r["type"] !== "alert.suppressed"));
+  '
+}
+ALERTS_BEFORE=$(countAlerts)
+
+php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+use StormWatch\{Settings,Schedule};
+$c = [];
+foreach (Schedule::DAYS as $d) { $c[$d] = ["closed" => true, "open" => "12:00", "close" => "22:00"]; }
+Settings::putRaw("monitor_schedule_enabled", true);
+Settings::putRaw("monitor_schedule", json_encode($c));
+' >/dev/null 2>&1
+
+for i in 1 2 3; do
+  curl -s -o "${WORK}/ingest-closed.json" -H 'Content-Type: application/json' \
+    -H "X-Ingest-Token: ${INGEST_TOKEN}" \
+    -d '{"strikes":[{"lat":41.3'"${i}"'5,"lon":-74.29,"time":'"$(date +%s)"'}]}' \
+    "${BASE}/api/ingest.php"
+done
+contains "${WORK}/ingest-closed.json" '"monitoring":false' "ingest reports that the venue is closed"
+contains "${WORK}/ingest-closed.json" '"stored":1' "strikes are still recorded while closed"
+
+ALERTS_AFTER=$(countAlerts)
+check "no alert is dispatched while the venue is closed (${ALERTS_BEFORE} before, ${ALERTS_AFTER} after)" \
+  "$([ "$ALERTS_BEFORE" = "$ALERTS_AFTER" ] && echo 0 || echo 1)"
+
+php "${ROOT}/bin/stormwatch.php" set monitor_schedule_enabled 0 >/dev/null 2>&1
+
+# A wall display signs in with a token in its URL rather than a session. The
+# page is only a shell — every number on it arrives from api/state.php — so the
+# token has to travel with those polls too, or the display renders once and
+# then bounces to a login form.
+group "Kiosk display"
+KIOSK_TOKEN=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+echo StormWatch\Settings::getString("kiosk_token");
+')
+KIOSKJAR="${WORK}/kiosk.txt"
+code=$(curl -s -o "${WORK}/kiosk.html" -w '%{http_code}' -c "$KIOSKJAR" -b "$KIOSKJAR" \
+  "${BASE}/index.php?kiosk=${KIOSK_TOKEN}")
+status_is 200 "$code" "the kiosk link opens the dashboard without signing in"
+contains "${WORK}/kiosk.html" "api/state.php?kiosk=${KIOSK_TOKEN}" "the polling URL carries the kiosk token"
+
+# Drive the exact URL the page just told the browser to poll.
+POLL=$(grep -o '"stateUrl":"[^"]*"' "${WORK}/kiosk.html" | head -1 | sed 's/.*"stateUrl":"//;s/"$//')
+code=$(curl -s -o "${WORK}/kiosk-state.json" -w '%{http_code}' -c "$KIOSKJAR" -b "$KIOSKJAR" "${BASE}${POLL}")
+status_is 200 "$code" "the kiosk display can actually poll for state"
+contains "${WORK}/kiosk-state.json" '"ok":true' "the kiosk poll returns live state"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/api/state.php?kiosk=wrong")
+status_is 401 "$code" "a wrong kiosk token is still refused"
+
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+  -d '{"action":"mute","minutes":30}' "${BASE}/api/action.php?kiosk=${KIOSK_TOKEN}")
+check "a kiosk token cannot perform operator actions (got HTTP ${code})" \
+  "$([ "$code" = "401" ] || [ "$code" = "419" ] && echo 0 || echo 1)"
+
 group "History and CLI"
 code=$(curl -s -o "${WORK}/history.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/history.php")
 status_is 200 "$code" "the history page renders"

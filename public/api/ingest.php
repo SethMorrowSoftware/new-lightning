@@ -16,6 +16,7 @@ use StormWatch\Geo;
 use StormWatch\Http;
 use StormWatch\Ingest;
 use StormWatch\Runner;
+use StormWatch\Schedule;
 use StormWatch\Settings;
 
 App::boot('public', true);
@@ -66,7 +67,14 @@ foreach ($items as $item) {
 $startedAt = time();
 $stored = Ingest::recordMany($records, 'relay');
 
-if ($stored > 0) {
+// Operating hours govern every path that can raise an alert, not only cron.
+// A relay tab left running overnight keeps posting strikes; without this check
+// each batch raises a warning, tick() stands it down a minute later as
+// "outside monitored hours", and the next batch raises it again — a warning
+// and an all clear every minute until morning. The strikes are still stored,
+// so the map and the history are complete either way.
+$monitoring = Schedule::isMonitoring();
+if ($stored > 0 && $monitoring) {
     AlertEngine::evaluate();
 }
 
@@ -77,7 +85,12 @@ if ($stored > 0 || $records !== []) {
         'relay',
         true,
         $stored,
-        sprintf('Browser relay delivered %d record(s); stored %d.', count($records), $stored),
+        sprintf(
+            'Browser relay delivered %d record(s); stored %d.%s',
+            count($records),
+            $stored,
+            $monitoring ? '' : ' Outside operating hours, so no alert was raised.'
+        ),
         $startedAt
     );
 }
@@ -86,5 +99,6 @@ Http::json([
     'ok' => true,
     'received' => count($records),
     'stored' => $stored,
+    'monitoring' => $monitoring,
     'state' => AlertEngine::publicState(),
 ]);

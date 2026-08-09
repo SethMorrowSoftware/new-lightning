@@ -19,8 +19,16 @@ $canAct = Auth::check();
 $units = Settings::getString('units');
 $provider = Settings::getString('provider');
 
+// A kiosk display is authenticated by the token in its URL rather than by a
+// session, so the polling URL needs it too — see App::activeKioskToken().
+$kioskToken = App::activeKioskToken();
+$stateUrl = Http::url('api/state.php');
+if ($kioskToken !== null && !$canAct) {
+    $stateUrl .= '?kiosk=' . rawurlencode($kioskToken);
+}
+
 $boot = [
-    'stateUrl' => Http::url('api/state.php'),
+    'stateUrl' => $stateUrl,
     'actionUrl' => Http::url('api/action.php'),
     'loginUrl' => Http::url('login.php'),
     // Scoped so a second install on the same domain keeps its own preferences.

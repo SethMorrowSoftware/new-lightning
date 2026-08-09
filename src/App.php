@@ -64,12 +64,27 @@ final class App
      */
     public static function hasKioskToken(): bool
     {
+        return self::activeKioskToken() !== null;
+    }
+
+    /**
+     * The kiosk token on this request, when it is the real one.
+     *
+     * Returned rather than merely checked because the dashboard has to hand it
+     * on. A kiosk viewer has no session, and the page it is shown is only the
+     * shell — every number on it arrives from api/state.php a few seconds
+     * later. If the token does not travel with those polls they are refused,
+     * and the wall display gives up and shows a login form instead of the
+     * weather.
+     */
+    public static function activeKioskToken(): ?string
+    {
         $provided = (string) ($_GET['kiosk'] ?? $_SERVER['HTTP_X_KIOSK_TOKEN'] ?? '');
         if ($provided === '') {
-            return false;
+            return null;
         }
         $expected = Settings::getString('kiosk_token');
-        return $expected !== '' && hash_equals($expected, $provided);
+        return ($expected !== '' && hash_equals($expected, $provided)) ? $provided : null;
     }
 
     /**

@@ -184,13 +184,34 @@ final class Strikes
         ];
     }
 
+    /**
+     * The oldest strike the rest of the application still needs.
+     *
+     * The cooldown asks "has anything struck inside the radius in the last N
+     * minutes?" and reads that answer out of this table. A retention window
+     * shorter than N does not make the answer "no strikes recently" — it makes
+     * it "no strikes on record", which is the same answer, and the venue is
+     * sent an all clear with lightning still overhead. So retention has a floor
+     * that no setting can go under, plus a margin for a cron run that fires
+     * late.
+     */
+    public static function minimumRetentionSeconds(): int
+    {
+        $cooldown = max(60, Settings::getInt('all_clear_minutes') * 60);
+        $markers = max(60, Settings::getInt('marker_ttl_minutes') * 60);
+        return max($cooldown, $markers) + 300;
+    }
+
     public static function prune(?int $retentionHours = null): int
     {
         $hours = $retentionHours ?? Settings::getInt('retention_hours');
-        $hours = max(1, $hours);
+        $seconds = max(1, $hours) * 3600;
+        // Housekeeping must never be able to delete the evidence the alert
+        // state machine is reasoning from.
+        $seconds = max($seconds, self::minimumRetentionSeconds());
         $stmt = Database::instance()->run(
             'DELETE FROM strikes WHERE struck_at < ?',
-            [time() - ($hours * 3600)]
+            [time() - $seconds]
         );
         return $stmt->rowCount();
     }

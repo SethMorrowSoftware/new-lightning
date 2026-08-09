@@ -703,7 +703,11 @@
     // one stalled request into a queue of them.
     if (state.inFlight) return state.inFlight;
 
-    var url = boot.stateUrl + (state.maxId ? '?since_id=' + state.maxId : '');
+    // stateUrl already carries a query string on a kiosk display, which is
+    // authenticated by a token in the URL rather than by a session.
+    var url = state.maxId
+      ? boot.stateUrl + (boot.stateUrl.indexOf('?') === -1 ? '?' : '&') + 'since_id=' + state.maxId
+      : boot.stateUrl;
     var request = fetchState(url)
       .then(function (response) {
         if (response.status === 401) {
