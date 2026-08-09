@@ -133,7 +133,7 @@ View::header('history');
               <?php if ((int) $run['ingested'] > 0): ?>
                 <span class="text-lo"> +<?= (int) $run['ingested'] ?></span>
               <?php endif; ?>
-              <div class="text-lo" style="font-size:11.5px;margin-top:3px;"><?= Http::e(mb_substr((string) $run['message'], 0, 160)) ?></div>
+              <div class="text-lo" style="font-size:var(--fs-xs);margin-top:var(--sp-1);"><?= Http::e(mb_substr((string) $run['message'], 0, 160)) ?></div>
             </td>
           </tr>
         <?php endforeach; ?>

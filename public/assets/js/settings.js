@@ -211,6 +211,16 @@
     syncSchedule();
   }
 
+  /* A day marked closed dims its own card, so the state is legible at a
+     glance across seven of them rather than read off a column of switches. */
+  Array.prototype.forEach.call(document.querySelectorAll('.sched-closed'), function (box) {
+    var card = box.closest('.sched-day');
+    if (!card) return;
+    var sync = function () { card.classList.toggle('is-closed', box.checked); };
+    box.addEventListener('change', sync);
+    sync();
+  });
+
   // ---- Email: SMTP fields only when SMTP is selected ----
   var transport = document.getElementById('email_transport');
   if (transport) {

@@ -280,7 +280,10 @@ View::header('settings');
       </div>
     </div>
 
-    <div class="btn-row"><button type="submit" class="btn primary">Save venue settings</button></div>
+    <div class="save-bar">
+      <span class="hint">Unsaved changes to the venue, its coordinates and the map are lost if you leave this tab.</span>
+      <button type="submit" class="btn primary">Save venue settings</button>
+    </div>
   </form>
 
 <?php elseif ($tab === 'alerts'): ?>
@@ -384,22 +387,28 @@ View::header('settings');
       </div>
 
       <div id="scheduleFields">
-        <div class="table-scroll">
-          <table class="table">
-            <thead><tr><th>Day</th><th>Open</th><th>Close</th><th style="text-align:right;">Closed</th></tr></thead>
-            <tbody>
-            <?php foreach (\StormWatch\Schedule::all() as $dayKey => $entry): ?>
-              <tr>
-                <td><strong><?= Http::e(\StormWatch\Schedule::DAY_NAMES[$dayKey]) ?></strong></td>
-                <td><input type="time" name="sched[<?= Http::e($dayKey) ?>][open]" value="<?= Http::e($entry['open']) ?>" style="width:auto;background:var(--bg-1);border:1px solid var(--border);color:var(--text-hi);border-radius:8px;padding:6px 9px;font-size:13px;"></td>
-                <td><input type="time" name="sched[<?= Http::e($dayKey) ?>][close]" value="<?= Http::e($entry['close']) ?>" style="width:auto;background:var(--bg-1);border:1px solid var(--border);color:var(--text-hi);border-radius:8px;padding:6px 9px;font-size:13px;"></td>
-                <td style="text-align:right;">
-                  <label class="switch"><input type="checkbox" name="sched[<?= Http::e($dayKey) ?>][closed]"<?= $entry['closed'] ? ' checked' : '' ?>><span class="slider"></span></label>
-                </td>
-              </tr>
-            <?php endforeach; ?>
-            </tbody>
-          </table>
+        <div class="sched-grid">
+        <?php foreach (\StormWatch\Schedule::all() as $dayKey => $entry): ?>
+          <div class="sched-day<?= $entry['closed'] ? ' is-closed' : '' ?>">
+            <header>
+              <span class="day-name"><?= Http::e(\StormWatch\Schedule::DAY_NAMES[$dayKey]) ?></span>
+              <label class="closed-label">
+                Closed
+                <span class="switch"><input type="checkbox" class="sched-closed" name="sched[<?= Http::e($dayKey) ?>][closed]"<?= $entry['closed'] ? ' checked' : '' ?>><span class="slider"></span></span>
+              </label>
+            </header>
+            <div class="times">
+              <div>
+                <label for="sched-open-<?= Http::e($dayKey) ?>">Open</label>
+                <input type="time" id="sched-open-<?= Http::e($dayKey) ?>" name="sched[<?= Http::e($dayKey) ?>][open]" value="<?= Http::e($entry['open']) ?>">
+              </div>
+              <div>
+                <label for="sched-close-<?= Http::e($dayKey) ?>">Close</label>
+                <input type="time" id="sched-close-<?= Http::e($dayKey) ?>" name="sched[<?= Http::e($dayKey) ?>][close]" value="<?= Http::e($entry['close']) ?>">
+              </div>
+            </div>
+          </div>
+        <?php endforeach; ?>
         </div>
         <div class="field-note" style="margin-top:10px;">
           Times are in the venue's time zone (<?= Http::e(Settings::getString('timezone')) ?>), so they keep
@@ -460,7 +469,10 @@ View::header('settings');
       </div>
     </div>
 
-    <div class="btn-row"><button type="submit" class="btn primary">Save alert rules</button></div>
+    <div class="save-bar">
+      <span class="hint">Unsaved changes to the radii, the cooldown and the operating hours are lost if you leave this tab.</span>
+      <button type="submit" class="btn primary">Save alert rules</button>
+    </div>
   </form>
 
 <?php elseif ($tab === 'slack'): ?>
@@ -558,6 +570,11 @@ View::header('settings');
       <button type="button" class="btn" data-test="test_slack">Send a test message</button>
     </div>
     <div id="testResult"></div>
+
+    <div class="save-bar">
+      <span class="hint">Testing does not save. Unsaved credentials and intervals are lost if you leave this tab.</span>
+      <button type="submit" class="btn primary">Save data source</button>
+    </div>
   </form>
 
 <?php elseif ($tab === 'email'): ?>
@@ -909,7 +926,6 @@ View::header('settings');
     </div>
 
     <div class="btn-row">
-      <button type="submit" class="btn primary">Save data source</button>
       <button type="button" class="btn" data-test="test_source">Test this source</button>
       <button type="button" class="btn" data-provider="rest" data-test="probe_mapping">Verify the mapping</button>
     </div>
@@ -1000,7 +1016,7 @@ View::header('settings');
                   <button type="submit" class="btn small auto danger">Remove</button>
                 </form>
               <?php else: ?>
-                <span class="text-lo" style="font-size:11.5px;">you</span>
+                <span class="text-lo" style="font-size:var(--fs-xs);">you</span>
               <?php endif; ?>
             </td>
           </tr>

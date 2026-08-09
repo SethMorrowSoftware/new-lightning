@@ -727,6 +727,68 @@ T::group('Closing time honours a mute');
     T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
 }
 
+T::group('The stylesheet is a system, not a pile of values');
+{
+    // None of this is decoration. Each check is a way the interface had
+    // already drifted, and the kind that creeps back one hurried edit at a
+    // time unless something is watching.
+    $css = (string) file_get_contents(dirname(__DIR__) . '/public/assets/css/app.css');
+
+    // A scale means the steps are deliberate. Half-pixel sizes are not a
+    // hierarchy anyone perceives — they read as inconsistency.
+    preg_match_all('/font-size:\s*([0-9.]+)px/', $css, $sizes);
+    $fractional = array_values(array_filter(
+        $sizes[1] ?? [],
+        static fn(string $v): bool => (float) $v !== floor((float) $v)
+    ));
+    T::same([], $fractional, 'no fractional font sizes survive in the stylesheet');
+
+    foreach (['--fs-2xs', '--fs-base', '--fs-xl', '--sp-4', '--r-lg', '--focus', '--measure'] as $token) {
+        T::ok(strpos($css, $token . ':') !== false, 'the ' . $token . ' token is defined');
+    }
+
+    // Focus was signalled by a border-colour change of about 1.3:1, which is
+    // no signal at all for anyone driving this from a keyboard.
+    T::ok(strpos($css, ':focus-visible') !== false, 'there is a visible focus ring');
+    T::ok(
+        preg_match('/\.field input:focus[^{]*\{[^}]*outline:\s*none/', $css) !== 1,
+        'and form fields no longer strip their outline'
+    );
+
+    // The warning banner pulses forever on a screen bolted to a wall.
+    T::ok(
+        strpos($css, 'prefers-reduced-motion') !== false,
+        'a request for less movement is honoured'
+    );
+
+    // Prose that runs the full width of a 940px settings page is about 150
+    // characters a line, twice a comfortable measure.
+    T::ok(
+        preg_match('/\.field-note,\s*\.helptext\{[^}]*max-width:var\(--measure\)/', $css) === 1,
+        'helper text is held to a readable measure'
+    );
+}
+
+T::group('The dashboard leads with the numbers');
+{
+    // The four statistics are the at-a-glance layer. They used to sit below
+    // the map, under the fold on a laptop, while the whole bottom of the left
+    // column stood empty.
+    $dash = (string) file_get_contents(dirname(__DIR__) . '/public/index.php');
+    $stats = strpos($dash, 'id="statAllClear"');
+    $map = strpos($dash, 'id="map"');
+    T::ok($stats !== false && $map !== false && $stats < $map, 'the statistics come before the map');
+
+    $js = (string) file_get_contents(dirname(__DIR__) . '/public/assets/js/dashboard.js');
+    // Rows move the map, so reaching one used to need a mouse.
+    T::ok(
+        strpos($js, '<button type="button" class="log-row') !== false,
+        'strike-log rows are buttons, so a keyboard can reach them'
+    );
+    // The countdown is the question staff are actually being asked.
+    T::ok(strpos($js, 'is-primary') !== false, 'the all-clear countdown is emphasised while a hold runs');
+}
+
 T::group('Legible on a wall display');
 {
     // This page is read off a screen behind the counter, from ten feet away,

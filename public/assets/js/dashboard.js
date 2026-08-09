@@ -136,16 +136,19 @@
   var ringSwatch = el('ringSwatch');
   if (ringSwatch) ringSwatch.style.background = basemap.displayRing;
 
+  /* The container keeps whatever pale colour the basemap would have been, so
+     the message needs to bring its own dark surface with it — painted in the
+     dimmest grey on a near-white rectangle it was barely readable. */
   function showMapUnavailable(reason) {
     var container = el('map');
     if (!container) return;
-    container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;'
-      + 'height:100%;padding:24px;text-align:center;color:var(--text-lo);font-size:13px;line-height:1.6;">'
-      + reason + '<br>Alerts, statistics and the strike log below are unaffected.</div>';
+    container.style.background = 'transparent';
+    container.innerHTML = '<div class="map-unavailable"><p><strong>' + escapeHtml(reason) + '</strong>'
+      + 'Alerts, statistics and the strike log are unaffected — they do not come from the map.</p></div>';
   }
 
   if (!hasLeaflet) {
-    showMapUnavailable('The map library could not be loaded, so the map is unavailable.');
+    showMapUnavailable('The map could not be loaded.');
   } else try {
     map = L.map('map', { zoomControl: true, attributionControl: true })
       .setView([boot.venue.lat, boot.venue.lon], boot.mapZoom);
@@ -205,7 +208,7 @@
        operator whether it is safe to be outside. */
     hasLeaflet = false;
     map = null;
-    showMapUnavailable('The map could not be drawn, so it is unavailable.');
+    showMapUnavailable('The map could not be drawn.');
   }
 
   // ---------- radar overlay ----------
@@ -349,12 +352,14 @@
     }
     var html = '';
     state.strikes.slice(0, 40).forEach(function (strike) {
-      html += '<div class="log-row' + (strike.mi <= boot.radii.alert ? ' close' : '')
+      /* A button, not a div: these rows move the map, and reaching one used
+         to require a mouse. */
+      html += '<button type="button" class="log-row' + (strike.mi <= boot.radii.alert ? ' close' : '')
         + '" data-id="' + strike.id + '">'
         + '<span>' + fmtClock(strike.ts) + '</span>'
         + '<span>' + escapeHtml(strike.dir) + '</span>'
         + '<span class="dist">' + fmtDistance(strike.mi) + '</span>'
-        + '</div>';
+        + '</button>';
     });
     list.innerHTML = html;
   }
@@ -455,12 +460,17 @@
       ? fmtDistance(data.stats.nearest_mi) : '—';
 
     var allClear = el('statAllClear');
-    if (data.state.level === 'warning' && data.state.all_clear_at) {
+    var allClearTile = el('statAllClearTile');
+    var holding = data.state.level === 'warning' && data.state.all_clear_at;
+    if (holding) {
       var remaining = data.state.all_clear_at - data.server_time;
       allClear.textContent = remaining > 0 ? fmtDuration(remaining) : 'due';
     } else {
       allClear.textContent = '—';
     }
+    /* While a hold is running this is the question staff are actually being
+       asked, so it stops being the fourth of four identical tiles. */
+    if (allClearTile) allClearTile.className = 'stat' + (holding ? ' is-primary' : '');
 
     el('strikeCount').textContent = state.strikes.length + ' strike'
       + (state.strikes.length === 1 ? '' : 's') + ' shown';
