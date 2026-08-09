@@ -9,6 +9,7 @@ require __DIR__ . '/../../src/bootstrap.php';
 
 use StormWatch\AlertEngine;
 use StormWatch\App;
+use StormWatch\Forecast;
 use StormWatch\Geo;
 use StormWatch\Http;
 use StormWatch\Runner;
@@ -51,6 +52,12 @@ foreach ($strikes as $strike) {
 $stats = Strikes::stats(3600);
 $status = Runner::status();
 
+// The caller sends the stamp of the forecast it is already showing, and gets
+// nothing back while that is still the current one. The forecast changes every
+// few minutes; this poll runs every few seconds.
+$forecastStamp = isset($_GET['forecast']) ? (string) $_GET['forecast'] : null;
+$forecast = Forecast::summaryIfChanged($forecastStamp);
+
 Http::json([
     'ok' => true,
     'server_time' => time(),
@@ -69,4 +76,8 @@ Http::json([
         'window_minutes' => 60,
     ],
     'source' => $status,
+    // Null when the caller is already current, or when the card is switched
+    // off; the stamp beside it is what tells those two apart.
+    'forecast' => $forecast,
+    'forecast_stamp' => Forecast::stamp(),
 ]);

@@ -19,6 +19,7 @@ use StormWatch\Config;
 use StormWatch\Crypto;
 use StormWatch\Database;
 use StormWatch\Events;
+use StormWatch\Forecast;
 use StormWatch\Geo;
 use StormWatch\Ingest;
 use StormWatch\Migrations;
@@ -1679,6 +1680,256 @@ T::group('WebSocket client');
     } catch (Throwable $e) {
         T::ok(strpos($e->getMessage(), 'Could not open a connection') === 0, 'a refused connection explains itself');
     }
+}
+
+T::group('National Weather Service forecast');
+{
+    // Recorded response shapes from api.weather.gov. The mapping, not the HTTP
+    // around it, is the part that can silently go wrong — and a build box
+    // cannot reach the service to find out, so the shapes are pinned here.
+    $grid = ['forecast' => 'https://api.weather.gov/gridpoints/OKX/33,37/forecast',
+             'hourly' => 'https://api.weather.gov/gridpoints/OKX/33,37/forecast/hourly',
+             'office' => 'OKX', 'place' => 'Chester, NY'];
+
+    $dayForecast = ['properties' => ['periods' => [
+        [
+            'number' => 1, 'name' => 'This Afternoon', 'isDaytime' => true,
+            'startTime' => '2026-08-09T14:00:00-04:00', 'endTime' => '2026-08-09T18:00:00-04:00',
+            'temperature' => 86, 'temperatureUnit' => 'F',
+            'probabilityOfPrecipitation' => ['unitCode' => 'wmoUnit:percent', 'value' => 70],
+            'windSpeed' => '5 to 10 mph', 'windDirection' => 'SW',
+            'shortForecast' => 'Showers And Thunderstorms Likely',
+            // The service wraps its detailed text with real newlines.
+            'detailedForecast' => "A chance of showers and thunderstorms.\nHigh near 86.",
+        ],
+        [
+            'number' => 2, 'name' => 'Tonight', 'isDaytime' => false,
+            'startTime' => '2026-08-09T18:00:00-04:00', 'endTime' => '2026-08-10T06:00:00-04:00',
+            'temperature' => 64, 'temperatureUnit' => 'F',
+            // Null is how a period with no meaningful chance is published.
+            'probabilityOfPrecipitation' => ['unitCode' => 'wmoUnit:percent', 'value' => null],
+            'windSpeed' => '5 mph', 'windDirection' => 'W',
+            'shortForecast' => 'Mostly Clear', 'detailedForecast' => 'Mostly clear, with a low around 64.',
+        ],
+        [
+            'number' => 3, 'name' => 'Monday', 'isDaytime' => true,
+            'startTime' => '2026-08-10T06:00:00-04:00', 'endTime' => '2026-08-10T18:00:00-04:00',
+            'temperature' => 81, 'temperatureUnit' => 'F',
+            'probabilityOfPrecipitation' => ['value' => 20],
+            'windSpeed' => '10 mph', 'windDirection' => 'NW',
+            'shortForecast' => 'Mostly Sunny', 'detailedForecast' => 'Mostly sunny, with a high near 81.',
+        ],
+    ]]];
+
+    $hourlyForecast = ['properties' => ['periods' => [
+        ['startTime' => '2026-08-09T14:00:00-04:00', 'endTime' => '2026-08-09T15:00:00-04:00',
+         'isDaytime' => true, 'temperature' => 86, 'temperatureUnit' => 'F',
+         'probabilityOfPrecipitation' => ['value' => 55], 'windSpeed' => '8 mph',
+         'windDirection' => 'SW', 'shortForecast' => 'Thunderstorms'],
+        ['startTime' => '2026-08-09T15:00:00-04:00', 'endTime' => '2026-08-09T16:00:00-04:00',
+         'isDaytime' => true, 'temperature' => 84, 'temperatureUnit' => 'F',
+         'probabilityOfPrecipitation' => ['value' => 30], 'windSpeed' => '8 mph',
+         'windDirection' => 'SW', 'shortForecast' => 'Chance Showers'],
+        // Junk in the middle must not take the rest of the list with it.
+        'not an object',
+        ['startTime' => 'nonsense', 'temperature' => 70, 'shortForecast' => 'Sunny'],
+        ['startTime' => '2026-08-09T16:00:00-04:00', 'endTime' => '2026-08-09T17:00:00-04:00',
+         'isDaytime' => true, 'temperature' => 82, 'temperatureUnit' => 'F',
+         'probabilityOfPrecipitation' => ['value' => null], 'shortForecast' => 'Partly Sunny'],
+    ]]];
+
+    $activeAlerts = ['features' => [
+        ['properties' => [
+            'status' => 'Actual', 'messageType' => 'Alert', 'severity' => 'Moderate',
+            'urgency' => 'Expected', 'event' => 'Flood Watch', 'areaDesc' => 'Orange, NY',
+            'headline' => 'Flood Watch until Monday morning', 'senderName' => 'NWS New York NY',
+            'onset' => '2026-08-09T16:00:00-04:00', 'expires' => '2026-08-10T08:00:00-04:00',
+            'ends' => '2026-08-10T08:00:00-04:00', 'instruction' => 'Monitor later forecasts.',
+        ]],
+        ['properties' => [
+            'status' => 'Actual', 'messageType' => 'Alert', 'severity' => 'Severe',
+            'urgency' => 'Immediate', 'event' => 'Severe Thunderstorm Warning', 'areaDesc' => 'Orange, NY',
+            'headline' => 'Severe Thunderstorm Warning issued', 'senderName' => 'NWS New York NY',
+            'onset' => '2026-08-09T14:20:00-04:00', 'expires' => '2026-08-09T15:15:00-04:00',
+            'ends' => null, 'instruction' => 'Move to an interior room.',
+        ]],
+        // A drill published through the same feed as the real thing.
+        ['properties' => [
+            'status' => 'Exercise', 'messageType' => 'Alert', 'severity' => 'Extreme',
+            'event' => 'Tornado Warning', 'areaDesc' => 'Orange, NY',
+        ]],
+        ['properties' => [
+            'status' => 'Actual', 'messageType' => 'Cancel', 'severity' => 'Severe',
+            'event' => 'Special Marine Warning', 'areaDesc' => 'Orange, NY',
+        ]],
+        // The same event arriving from a second zone that also covers the venue.
+        ['properties' => [
+            'status' => 'Actual', 'messageType' => 'Update', 'severity' => 'Severe',
+            'event' => 'Severe Thunderstorm Warning', 'areaDesc' => 'Sussex, NJ',
+            'expires' => '2026-08-09T15:30:00-04:00',
+        ]],
+    ]];
+
+    $payload = Forecast::payloadFrom($grid, $activeAlerts, $dayForecast, $hourlyForecast);
+
+    T::same('Chester, NY', $payload['place'], 'the resolved place name is carried through');
+    T::same(3, count($payload['periods']), 'every day/night period is mapped');
+    T::same('This Afternoon', $payload['periods'][0]['name'], 'the period name is kept');
+    T::same(86, $payload['periods'][0]['temp'], 'the temperature is read');
+    T::same('F', $payload['periods'][0]['unit'], 'the temperature unit comes from the response');
+    T::same(70, $payload['periods'][0]['pop'], 'the precipitation chance is unwrapped from its object');
+    T::same(null, $payload['periods'][1]['pop'], 'a null precipitation chance stays null, not zero');
+    T::same(true, $payload['periods'][0]['storm'], 'a thunderstorm period is flagged');
+    T::same(false, $payload['periods'][1]['storm'], 'a clear period is not');
+    T::same(false, $payload['periods'][1]['day'], 'a night period knows it is one');
+    T::ok(
+        strpos($payload['periods'][0]['detail'], "\n") === false
+            && strpos($payload['periods'][0]['detail'], 'High near 86.') !== false,
+        'the hard-wrapped detailed text is flattened without losing anything'
+    );
+    T::same(
+        strtotime('2026-08-09T14:00:00-04:00'),
+        $payload['periods'][0]['start'],
+        'start times are parsed with their offset'
+    );
+
+    T::same(3, count($payload['hours']), 'unreadable hourly entries are skipped, the rest survive');
+    T::same(86, $payload['hours'][0]['temp'], 'the first hour maps');
+    T::same(55, $payload['hours'][0]['pop'], 'so does its precipitation chance');
+    T::same(true, $payload['hours'][0]['storm'], 'a thunderstorm hour is flagged');
+    T::ok(!array_key_exists('detail', $payload['hours'][0]), 'hourly entries carry no detailed text');
+
+    T::same(2, count($payload['alerts']), 'exercises, cancellations and duplicate events are dropped');
+    T::same('Severe Thunderstorm Warning', $payload['alerts'][0]['event'], 'the worst alert sorts first');
+    T::same('severe', $payload['alerts'][0]['severity'], 'severity is normalised to lower case');
+    T::same('Flood Watch', $payload['alerts'][1]['event'], 'the lesser alert follows it');
+    T::same(
+        strtotime('2026-08-10T08:00:00-04:00'),
+        $payload['alerts'][1]['expires'],
+        '"ends" is preferred as the expiry when the service sets it'
+    );
+    T::same(
+        strtotime('2026-08-09T15:15:00-04:00'),
+        $payload['alerts'][0]['expires'],
+        'a null "ends" falls back to "expires"'
+    );
+
+    // A partial answer keeps what it already had rather than blanking the card.
+    $carried = Forecast::payloadFrom($grid, null, null, $hourlyForecast, $payload);
+    T::same(2, count($carried['alerts']), 'a failed alert request keeps the alerts already on screen');
+    T::same(3, count($carried['periods']), 'a failed forecast request keeps the previous periods');
+    T::same(3, count($carried['hours']), 'the part that did answer is refreshed');
+
+    $empty = Forecast::payloadFrom($grid, ['features' => []], $dayForecast, $hourlyForecast, $payload);
+    T::same(0, count($empty['alerts']), 'an answer with no alerts clears the ones that were showing');
+
+    T::ok(Forecast::isStormy('Chance Showers And Thunderstorms'), 'thunderstorms are recognised');
+    T::ok(Forecast::isStormy('Tornado Warning'), 'so are tornadoes');
+    T::ok(!Forecast::isStormy('Mostly Sunny'), 'a clear afternoon is not a storm');
+
+    T::ok(
+        stripos(Forecast::explainStatus(404, '{"detail":"Unable to provide data"}'), 'no forecast for this location') !== false,
+        'a 404 is explained as an unsupported location'
+    );
+    T::ok(
+        stripos(Forecast::explainStatus(429, ''), 'rate limiting') !== false,
+        'a 429 points at the refresh interval'
+    );
+    T::ok(
+        stripos(Forecast::explainStatus(503, ''), 'their end') !== false,
+        'a 5xx is attributed to the service'
+    );
+}
+
+T::group('Forecast card presentation');
+{
+    Settings::put(['nws_enabled' => true, 'nws_refresh_minutes' => 10]);
+    Settings::flushCache();
+
+    $now = time();
+    $writeCache = static function (array $payload, int $fetchedAt, int $ok = 1, string $message = ''): void {
+        Database::instance()->upsert('forecast_cache', [
+            'id' => 1,
+            'point' => '41.3608,-74.2854',
+            'grid' => (string) json_encode(['forecast' => 'https://api.weather.gov/x', 'hourly' => '']),
+            'grid_at' => time(),
+            'covered' => 1,
+            'payload' => (string) json_encode($payload),
+            'fetched_at' => $fetchedAt,
+            'attempted_at' => $fetchedAt,
+            'ok' => $ok,
+            'message' => $message,
+        ], 'id');
+        // Written behind the class's back, so its per-request memo has to go.
+        Forecast::flushCache();
+    };
+
+    $writeCache([
+        'place' => 'Chester, NY',
+        'office' => 'OKX',
+        'alerts' => [
+            ['event' => 'Severe Thunderstorm Warning', 'severity' => 'severe', 'urgency' => 'immediate',
+             'headline' => '', 'instruction' => '', 'area' => 'Orange, NY', 'sender' => 'NWS',
+             'onset' => $now - 600, 'expires' => $now - 60],
+            ['event' => 'Flood Watch', 'severity' => 'moderate', 'urgency' => 'expected',
+             'headline' => '', 'instruction' => '', 'area' => 'Orange, NY', 'sender' => 'NWS',
+             'onset' => $now - 600, 'expires' => $now + 7200],
+            ['event' => 'Air Quality Alert', 'severity' => 'unknown', 'urgency' => 'future',
+             'headline' => '', 'instruction' => '', 'area' => 'Orange, NY', 'sender' => 'NWS',
+             'onset' => null, 'expires' => null],
+        ],
+        'hours' => [
+            ['start' => $now - 7200, 'end' => $now - 3600, 'day' => true, 'temp' => 80, 'unit' => 'F',
+             'pop' => 10, 'short' => 'Sunny', 'wind' => '', 'dir' => '', 'storm' => false],
+            ['start' => $now, 'end' => $now + 3600, 'day' => true, 'temp' => 84, 'unit' => 'F',
+             'pop' => 40, 'short' => 'Thunderstorms', 'wind' => '', 'dir' => '', 'storm' => true],
+        ],
+        'periods' => [
+            ['name' => 'Yesterday', 'start' => $now - 90000, 'end' => $now - 86400, 'day' => true,
+             'temp' => 79, 'unit' => 'F', 'pop' => null, 'short' => 'Sunny', 'detail' => '',
+             'wind' => '', 'dir' => '', 'storm' => false],
+            ['name' => 'Tonight', 'start' => $now, 'end' => $now + 43200, 'day' => false,
+             'temp' => 64, 'unit' => 'F', 'pop' => 30, 'short' => 'Mostly Clear', 'detail' => '',
+             'wind' => '', 'dir' => '', 'storm' => false],
+        ],
+    ], $now - 120);
+
+    $summary = Forecast::summary();
+    T::ok($summary !== null, 'the card has something to draw');
+    T::same('Chester, NY', $summary['place'], 'the place name reaches the dashboard');
+    T::same(true, $summary['ok'], 'a clean fetch reads as healthy');
+
+    // The one that matters: an expired warning still sitting in the cache must
+    // never be drawn. A "Severe Thunderstorm Warning" badge over a storm that
+    // finished an hour ago is exactly the kind of wrong this screen cannot be.
+    $events = array_map(static fn(array $a): string => (string) $a['event'], $summary['alerts']);
+    T::same(['Flood Watch', 'Air Quality Alert'], $events, 'an expired warning is not shown; an open-ended one is');
+
+    T::same(1, count($summary['hours']), 'hours that have already passed are dropped');
+    T::same(84, $summary['hours'][0]['temp'], 'the current hour is the one kept');
+    T::same(1, count($summary['periods']), 'so are finished periods');
+    T::same('Tonight', $summary['periods'][0]['name'], 'the next period leads');
+
+    // Staleness is the client's call, but the threshold comes from here, and it
+    // has to allow for a missed cron minute or two.
+    T::ok($summary['stale_after'] >= 1800, 'the staleness threshold leaves room for a late scheduled task');
+    T::same($summary['stamp'], Forecast::stamp(), 'the stamp matches the one the poll compares against');
+    T::same(null, Forecast::summaryIfChanged($summary['stamp']), 'an up-to-date caller is sent nothing');
+    T::ok(Forecast::summaryIfChanged('0.0') !== null, 'a caller holding an older copy gets the new one');
+
+    Settings::put(['nws_enabled' => false]);
+    Settings::flushCache();
+    T::same(null, Forecast::summary(), 'switching the card off stops the dashboard reading it');
+    T::same('', Forecast::stamp(), 'and stops the poll asking for it');
+    Settings::put(['nws_enabled' => true]);
+    Settings::flushCache();
+
+    Database::instance()->run('DELETE FROM forecast_cache');
+    Forecast::flushCache();
+    $fresh = Forecast::summary();
+    T::same(true, $fresh['never'], 'an install that has never fetched says so');
+    T::same(null, $fresh['updated_at'], 'and offers no update time to pretend otherwise');
+    T::same([], $fresh['periods'], 'with nothing to show');
 }
 
 T::group('Blitzortung frame decoding');

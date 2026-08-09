@@ -8,6 +8,7 @@ require __DIR__ . '/../src/bootstrap.php';
 
 use StormWatch\App;
 use StormWatch\Auth;
+use StormWatch\Forecast;
 use StormWatch\Geo;
 use StormWatch\Http;
 use StormWatch\Settings;
@@ -18,6 +19,7 @@ App::boot('view');
 $canAct = Auth::check();
 $units = Settings::getString('units');
 $provider = Settings::getString('provider');
+$showForecast = Forecast::isEnabled();
 
 // A kiosk display is authenticated by the token in its URL rather than by a
 // session, so the polling URL needs it too — see App::activeKioskToken().
@@ -58,6 +60,10 @@ $boot = [
         'opacity' => Settings::getInt('radar_opacity') / 100,
     ],
     'provider' => $provider,
+    // Read from the cache table, never from api.weather.gov — a page load must
+    // not wait on somebody else's server. The cron tick keeps it current, and
+    // the poll below replaces this copy when it changes.
+    'forecast' => $showForecast ? Forecast::summary() : null,
 ];
 
 // The relay block carries the ingest token, which is a write credential: it
@@ -96,6 +102,28 @@ View::header('dashboard');
   </div>
   <?php endif; ?>
 </div>
+
+<?php /* Directly under the alert banner and above everything else. The banner
+         answers "is it dangerous now"; this answers "what is coming", which is
+         the question behind every decision made an hour ahead — whether to run
+         the four o'clock party outside, when to start clearing the water park.
+         Watches and warnings from the National Weather Service surface at the
+         top of it, because those arrive before the first strike does. */ ?>
+<?php if ($showForecast): ?>
+<section class="panel wx" id="wxCard">
+  <div class="panel-title">
+    <span>Weather ahead<span class="wx-place" id="wxPlace"></span></span>
+    <span class="muted" id="wxUpdated">Loading the forecast…</span>
+  </div>
+  <div class="wx-alerts" id="wxAlerts" hidden></div>
+  <div class="wx-hours" id="wxHours" hidden></div>
+  <div class="wx-periods" id="wxPeriods" hidden></div>
+  <div class="wx-foot">
+    <span class="wx-note" id="wxNote">Forecast and warnings from the US National Weather Service.</span>
+    <?php if ($canAct): ?><button type="button" class="link" id="wxRefreshBtn">Refresh now</button><?php endif; ?>
+  </div>
+</section>
+<?php endif; ?>
 
 <div class="grid">
   <div>

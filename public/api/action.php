@@ -12,6 +12,7 @@ require __DIR__ . '/../../src/bootstrap.php';
 use StormWatch\AlertEngine;
 use StormWatch\App;
 use StormWatch\Events;
+use StormWatch\Forecast;
 use StormWatch\Geo;
 use StormWatch\Http;
 use StormWatch\Notifiers\EmailNotifier;
@@ -143,6 +144,18 @@ switch ($action) {
     case 'run_tick':
         $result = Runner::tick();
         Http::json(['ok' => $result['ok'], 'message' => $result['message'], 'state' => AlertEngine::publicState()]);
+
+    case 'refresh_forecast':
+        // The card is normally kept current by the cron tick. This is for the
+        // install where cron is not running yet, and for the afternoon somebody
+        // wants to know whether a warning has been issued in the last minute
+        // rather than in the last ten.
+        $result = Forecast::refresh();
+        Http::json([
+            'ok' => $result['ok'],
+            'message' => $result['message'],
+            'forecast' => Forecast::summary(),
+        ]);
 
     default:
         Http::jsonError('Unknown action.', 400);

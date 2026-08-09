@@ -254,6 +254,101 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .alert-actions{display:flex;gap:var(--sp-2);flex-shrink:0;}
 .alert-actions .btn{width:auto;padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs);}
 
+/* ---------- Forecast card ----------
+   Sits between the alert banner and the map: the banner says whether it is
+   dangerous now, this says what is coming. Wide, dense and readable from a
+   few feet away, because the decisions it feeds — run the four o'clock party
+   outside, start clearing the water park — are made standing up. */
+.panel.wx{position:relative;overflow:hidden;margin-bottom:var(--sp-5);}
+.panel.wx::before{
+  content:"";position:absolute;left:0;right:0;top:0;height:2px;
+  background:linear-gradient(90deg,var(--bolt),transparent 55%);opacity:.55;
+}
+/* A watch or warning in force outranks everything else on the card, and has
+   to be visible from the corner of an eye rather than found by reading. */
+.panel.wx.has-warning{border-color:var(--danger);}
+.panel.wx.has-warning::before{background:linear-gradient(90deg,var(--danger),transparent 70%);opacity:1;}
+.panel.wx.is-stale{border-color:var(--amber-dim);}
+.wx-place{color:var(--text-lo);font-weight:400;text-transform:none;letter-spacing:0;}
+.panel-title .muted.wx-stale{color:var(--amber);}
+/* The three sections below are flex and grid containers, and a class selector
+   out-ranks the browser's own [hidden] rule — so an empty one kept its margins
+   and left a band of nothing across the card. Say it again, louder. */
+.wx-alerts[hidden], .wx-hours[hidden], .wx-periods[hidden]{display:none;}
+
+.wx-alerts{display:flex;flex-direction:column;gap:var(--sp-2);margin-bottom:var(--sp-4);}
+.wx-alert{
+  display:flex;align-items:baseline;gap:var(--sp-3);flex-wrap:wrap;
+  padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md);
+  border:1px solid var(--border);background:var(--bg-1);
+}
+.wx-alert .ev{font-family:var(--font-display);font-weight:700;font-size:var(--fs-md);color:var(--text-hi);}
+.wx-alert .wh{font-family:var(--font-mono);font-size:var(--fs-xs);color:var(--text-hi);opacity:.85;
+  font-variant-numeric:tabular-nums;white-space:nowrap;}
+.wx-alert .ar{font-size:var(--fs-xs);color:var(--text-lo);flex:1;min-width:0;}
+.wx-alert.high{border-color:var(--danger);background:rgba(255,77,94,.1);}
+.wx-alert.high .ev{color:#FF8A96;}
+.wx-alert.mid{border-color:var(--amber-dim);background:rgba(255,182,39,.09);}
+.wx-alert.mid .ev{color:var(--amber);}
+.wx-alert.low{border-color:rgba(111,227,255,.3);background:rgba(111,227,255,.06);}
+.wx-alert.low .ev{color:var(--bolt);}
+
+/* Hour by hour. Scrolls sideways on a phone rather than wrapping into a
+   block that has to be read rather than scanned. */
+.wx-hours{display:flex;gap:var(--sp-2);overflow-x:auto;padding-bottom:var(--sp-2);}
+.wx-hours::-webkit-scrollbar{height:6px;}
+.wx-hours::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+.wx-hours::-webkit-scrollbar-track{background:transparent;}
+.wx-hour{
+  flex:0 0 auto;width:62px;display:flex;flex-direction:column;align-items:center;gap:3px;
+  padding:var(--sp-3) var(--sp-1);border-radius:var(--r-md);
+  background:var(--bg-1);border:1px solid var(--border-soft);
+}
+.wx-hour .h{font-size:var(--fs-2xs);color:var(--text-lo);text-transform:uppercase;
+  letter-spacing:.5px;white-space:nowrap;}
+.wx-hour .i{color:var(--text-mid);line-height:0;}
+.wx-hour .i svg{width:22px;height:22px;display:block;}
+.wx-hour .t{font-family:var(--font-mono);font-size:var(--fs-base);color:var(--text-hi);
+  font-variant-numeric:tabular-nums;line-height:1.2;}
+.wx-hour .p{font-size:var(--fs-2xs);color:var(--bolt);min-height:15px;font-variant-numeric:tabular-nums;}
+.wx-hour.storm{border-color:var(--amber-dim);background:rgba(255,182,39,.08);}
+.wx-hour.storm .i{color:var(--amber);}
+
+.wx-periods{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
+  gap:var(--sp-3);margin-top:var(--sp-4);}
+.wx-period{background:var(--bg-1);border:1px solid var(--border-soft);border-radius:var(--r-md);
+  padding:var(--sp-3) var(--sp-4);}
+.wx-period .nm{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.6px;
+  color:var(--text-lo);font-weight:600;}
+.wx-period .hd{display:flex;align-items:center;gap:var(--sp-2);margin:var(--sp-2) 0;}
+.wx-period .i{color:var(--text-mid);line-height:0;}
+.wx-period .i svg{width:24px;height:24px;display:block;}
+.wx-period .tp{font-family:var(--font-mono);font-size:var(--fs-lg);color:var(--text-hi);
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;}
+/* Clamped so a wordy period ("Showers and thunderstorms likely, then a chance
+   of showers after 2am") cannot make its tile twice the height of its
+   neighbours. The full sentence is on the tile's tooltip. */
+.wx-period .sf{font-size:var(--fs-xs);color:var(--text-mid);line-height:1.45;
+  display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+.wx-period .pp{display:inline-block;margin-top:var(--sp-2);font-size:var(--fs-2xs);color:var(--bolt);}
+.wx-period.storm{border-color:var(--amber-dim);background:rgba(255,182,39,.06);}
+.wx-period.storm .i{color:var(--amber);}
+
+.wx-foot{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);
+  margin-top:var(--sp-4);padding-top:var(--sp-3);border-top:1px solid var(--border-soft);}
+.wx-note{font-size:var(--fs-xs);color:var(--text-lo);line-height:1.55;max-width:var(--measure);}
+.wx-note.problem{color:var(--amber);}
+.wx-foot .link{background:none;border:0;padding:0;font-family:inherit;font-size:var(--fs-xs);
+  color:var(--text-lo);cursor:pointer;white-space:nowrap;}
+.wx-foot .link:hover{color:var(--text-hi);}
+.wx-foot .link:disabled{opacity:.5;cursor:not-allowed;}
+
+@media (max-width:640px){
+  .wx-hour{width:56px;}
+  .wx-alert .ev{font-size:var(--fs-base);}
+  .wx-foot{flex-wrap:wrap;}
+}
+
 /* ---------- Map ---------- */
 .map-wrap{position:relative;}
 #map{width:100%;flex:1;height:100%;min-height:clamp(320px,46vh,520px);

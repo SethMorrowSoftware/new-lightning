@@ -52,6 +52,13 @@ final class Runner
             $next = Schedule::nextStart();
             $message = 'Outside operating hours; monitoring is paused'
                 . ($next !== null ? ' until ' . self::localTime($next) : '') . '.';
+            // Still worth having: "should we open the splash pad today" is a
+            // question asked before the doors do, and the forecast costs
+            // nothing to keep current.
+            $forecast = self::refreshForecast();
+            if ($forecast !== null) {
+                $message .= ' ' . $forecast;
+            }
             self::recordRun('tick', $provider, true, 0, $message, $startedAt);
             return ['ok' => true, 'job' => 'tick', 'ingested' => 0, 'skipped' => true, 'message' => $message];
         }
@@ -93,10 +100,57 @@ final class Runner
             self::releaseLock('tick');
         }
 
+        $forecast = self::refreshForecast();
+        if ($forecast !== null) {
+            $messages[] = $forecast;
+        }
+
         $message = $messages === [] ? 'Nothing to do.' : implode(' ', $messages);
         self::recordRun('tick', $provider, $ok, $ingested, $message, $startedAt);
 
         return ['ok' => $ok, 'job' => 'tick', 'ingested' => $ingested, 'message' => $message];
+    }
+
+    /**
+     * Bring the National Weather Service card up to date, if it is due.
+     *
+     * Called with the tick lock released, and that is the whole point of where
+     * it sits. It talks to somebody else's server, and a slow answer from
+     * api.weather.gov held across the lock would make the next cron minute skip
+     * out at the lock and never re-evaluate the alert state — a weather card
+     * must not be able to stop lightning alerting. Forecast::refresh() takes a
+     * lock of its own, so two ticks still cannot overlap on the fetch itself.
+     *
+     * Returns a line for the tick's message, or null when nothing was done.
+     */
+    private static function refreshForecast(): ?string
+    {
+        try {
+            $result = Forecast::refreshIfDue();
+        } catch (\Throwable $e) {
+            error_log('[stormwatch] forecast refresh failed: ' . $e->getMessage());
+            return null;
+        }
+
+        if (!$result['ran']) {
+            return null;
+        }
+        if (!$result['ok']) {
+            // Once an hour at most. The retry cadence after a failure is a
+            // couple of minutes, and a site behind a firewall that blocks
+            // api.weather.gov would otherwise fill the history with the same
+            // sentence for ever.
+            $last = Database::instance()->first(
+                "SELECT created_at FROM events WHERE type = 'forecast.failed' ORDER BY id DESC LIMIT 1"
+            );
+            if ($last === null || (time() - (int) $last['created_at']) >= 3600) {
+                // A warning, not an error: the forecast is context, and losing
+                // it does not stop a single lightning alert.
+                Events::log('forecast.failed', Events::SEVERITY_WARNING, $result['message'], []);
+            }
+        }
+
+        return $result['message'];
     }
 
     /**

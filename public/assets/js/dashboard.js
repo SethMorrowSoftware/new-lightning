@@ -21,7 +21,10 @@
     pollTimer: null,
     inFlight: null,
     failures: 0,
-    clockOffset: 0
+    clockOffset: 0,
+    // What the forecast card is showing. Sent with every poll so the server
+    // can skip re-sending a forecast that has not moved.
+    forecastStamp: (boot.forecast && boot.forecast.stamp) || ''
   };
 
   // ---------- helpers ----------
@@ -570,6 +573,222 @@
     simulator: 'Generating a drifting storm cell for testing. Switch to a live source before relying on alerts.'
   };
 
+  // ---------- forecast (National Weather Service) ----------
+
+  /* Drawn from a cache the server keeps, never from api.weather.gov directly:
+     a wall display polling every ten seconds must not become ten-second
+     polling of a free public API, and the page must not wait on one either.
+
+     Everything in here is wrapped so that it cannot throw into applyState().
+     The forecast is context; the alert banner, the map and the strike log are
+     the reason this page exists, and a bad character in a forecast sentence
+     does not get to take them down. */
+
+  var WX_ICONS = {
+    sun: '<circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M4.2 4.2l1.6 1.6M18.2 18.2l1.6 1.6M2.5 12h2.2M19.3 12h2.2M4.2 19.8l1.6-1.6M18.2 5.8l1.6-1.6"/>',
+    moon: '<path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.2 8.2 0 1 0 20 14.5z"/>',
+    cloud: '<path d="M17.5 18H7a4.2 4.2 0 0 1-.5-8.4A5.6 5.6 0 0 1 17.4 10a4 4 0 0 1 .1 8z"/>',
+    partly: '<circle cx="8" cy="8" r="3"/><path d="M8 2.6v1.6M2.6 8h1.6M4.4 4.4l1.1 1.1M11.6 4.4l-1.1 1.1"/><path d="M18 19.5h-7.6a3.6 3.6 0 0 1-.4-7.2 4.8 4.8 0 0 1 9.1.4 3.4 3.4 0 0 1-1.1 6.8z"/>',
+    partlyNight: '<path d="M11.4 3.2a5.2 5.2 0 0 0 5.8 6.6"/><path d="M18 19.5h-7.6a3.6 3.6 0 0 1-.4-7.2 4.8 4.8 0 0 1 9.1.4 3.4 3.4 0 0 1-1.1 6.8z"/>',
+    rain: '<path d="M17.5 15.5H7a4.2 4.2 0 0 1-.5-8.4A5.6 5.6 0 0 1 17.4 7.5a4 4 0 0 1 .1 8z"/><path d="M8.5 18.4l-1 2.4M12.5 18.4l-1 2.4M16.5 18.4l-1 2.4"/>',
+    storm: '<path d="M17.5 14.5H7A4.2 4.2 0 0 1 6.5 6 5.6 5.6 0 0 1 17.4 6.5a4 4 0 0 1 .1 8z"/><path d="M13 15.5l-3.6 4.2h3l-.7 3.3"/>',
+    snow: '<path d="M17.5 14.5H7A4.2 4.2 0 0 1 6.5 6 5.6 5.6 0 0 1 17.4 6.5a4 4 0 0 1 .1 8z"/><path d="M9 18.5h.01M12 20.5h.01M15 18.5h.01M12 17.2h.01"/>',
+    fog: '<path d="M17 11H7a4.2 4.2 0 0 1-.5-8.4A5.6 5.6 0 0 1 17.4 3a4 4 0 0 1-.4 8z"/><path d="M4 15h16M6 18.5h13M4 22h9"/>',
+    wind: '<path d="M3 8.5h11a3 3 0 1 0-3-3M3 13h15a3 3 0 1 1-3 3M3 17.5h8"/>'
+  };
+
+  function wxIcon(text, isDay) {
+    var t = String(text || '').toLowerCase();
+    var body;
+    if (/thunder|t-?storm|tstm|squall|tornado/.test(t)) body = WX_ICONS.storm;
+    else if (/snow|sleet|flurr|freezing|wintry|blizzard|ice pellets/.test(t)) body = WX_ICONS.snow;
+    else if (/rain|shower|drizzle/.test(t)) body = WX_ICONS.rain;
+    else if (/fog|haze|smoke|mist/.test(t)) body = WX_ICONS.fog;
+    else if (/wind|breezy|blustery/.test(t)) body = WX_ICONS.wind;
+    // Before the plain cloud test: "Mostly Cloudy" is not overcast.
+    else if (/partly|mostly (sunny|clear|cloudy)|scattered clouds/.test(t)) body = isDay ? WX_ICONS.partly : WX_ICONS.partlyNight;
+    else if (/cloud|overcast/.test(t)) body = WX_ICONS.cloud;
+    else body = isDay ? WX_ICONS.sun : WX_ICONS.moon;
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" '
+      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + body + '</svg>';
+  }
+
+  function wxTime(ts, parts) {
+    try {
+      return new Date(ts * 1000).toLocaleTimeString([], Object.assign({ timeZone: boot.timezone }, parts));
+    } catch (e) {
+      return new Date(ts * 1000).toLocaleTimeString([], parts);
+    }
+  }
+
+  /* An expiry inside the next few hours reads better as a bare clock time;
+     one tomorrow morning needs the day or it is actively misleading. */
+  function wxUntil(ts) {
+    var clock = wxTime(ts, { hour: 'numeric', minute: '2-digit' });
+    if (ts - serverNow() < 18 * 3600) return clock;
+    var day;
+    try {
+      day = new Date(ts * 1000).toLocaleDateString([], { weekday: 'short', timeZone: boot.timezone });
+    } catch (e) {
+      day = new Date(ts * 1000).toLocaleDateString([], { weekday: 'short' });
+    }
+    return day + ' ' + clock;
+  }
+
+  /* Severity as the service publishes it, corrected by the word people
+     actually react to. A "warning" means it is happening or about to; a
+     "watch" means conditions are right for it. Staff read those two words
+     long before they read a severity field. */
+  function wxAlertRank(alert) {
+    var event = String(alert.event || '').toLowerCase();
+    var severity = String(alert.severity || '').toLowerCase();
+    if (severity === 'extreme' || /tornado/.test(event)) return 'high';
+    if (severity === 'severe' || /warning/.test(event)) return 'high';
+    if (severity === 'moderate' || /watch/.test(event)) return 'mid';
+    return 'low';
+  }
+
+  function renderForecastAlerts(alerts) {
+    var box = el('wxAlerts');
+    if (!box) return false;
+    if (!alerts || !alerts.length) {
+      box.innerHTML = '';
+      box.hidden = true;
+      return false;
+    }
+
+    var worst = 'low';
+    var html = '';
+    alerts.forEach(function (alert) {
+      var rank = wxAlertRank(alert);
+      if (rank === 'high' || (rank === 'mid' && worst === 'low')) worst = rank;
+      var when = [];
+      if (alert.onset && alert.onset > serverNow()) when.push('from ' + wxUntil(alert.onset));
+      if (alert.expires) when.push('until ' + wxUntil(alert.expires));
+      html += '<div class="wx-alert ' + rank + '">'
+        + '<span class="ev">' + escapeHtml(alert.event) + '</span>'
+        + (when.length ? '<span class="wh">' + escapeHtml(when.join(', ')) + '</span>' : '')
+        + (alert.area ? '<span class="ar">' + escapeHtml(alert.area) + '</span>' : '')
+        + '</div>';
+    });
+
+    box.innerHTML = html;
+    box.hidden = false;
+    return worst === 'high';
+  }
+
+  function renderForecastHours(hours) {
+    var box = el('wxHours');
+    if (!box) return;
+    if (!hours || !hours.length) {
+      box.innerHTML = '';
+      box.hidden = true;
+      return;
+    }
+    var html = '';
+    hours.forEach(function (hour, index) {
+      var pop = (hour.pop === null || hour.pop === undefined) ? '' : hour.pop + '%';
+      html += '<div class="wx-hour' + (hour.storm ? ' storm' : '') + '" title="'
+        + escapeHtml(hour.short || '') + '">'
+        + '<span class="h">' + escapeHtml(index === 0 ? 'Now' : wxTime(hour.start, { hour: 'numeric' })) + '</span>'
+        + '<span class="i">' + wxIcon(hour.short, hour.day) + '</span>'
+        + '<span class="t">' + (hour.temp === null || hour.temp === undefined ? '—' : hour.temp + '°') + '</span>'
+        + '<span class="p">' + escapeHtml(pop) + '</span>'
+        + '</div>';
+    });
+    box.innerHTML = html;
+    box.hidden = false;
+  }
+
+  function renderForecastPeriods(periods) {
+    var box = el('wxPeriods');
+    if (!box) return;
+    if (!periods || !periods.length) {
+      box.innerHTML = '';
+      box.hidden = true;
+      return;
+    }
+    var html = '';
+    periods.forEach(function (period) {
+      var temp = (period.temp === null || period.temp === undefined)
+        ? '—'
+        : period.temp + '°' + (period.unit || '');
+      var pop = (period.pop === null || period.pop === undefined || period.pop === 0)
+        ? ''
+        : '<span class="pp">' + period.pop + '% precip</span>';
+      html += '<div class="wx-period' + (period.storm ? ' storm' : '') + '" title="'
+        + escapeHtml(period.detail || period.short || '') + '">'
+        + '<div class="nm">' + escapeHtml(period.name || '') + '</div>'
+        + '<div class="hd"><span class="i">' + wxIcon(period.short, period.day) + '</span>'
+        + '<span class="tp">' + escapeHtml(temp) + '</span></div>'
+        + '<div class="sf">' + escapeHtml(period.short || '') + '</div>'
+        + pop
+        + '</div>';
+    });
+    box.innerHTML = html;
+    box.hidden = false;
+  }
+
+  function renderForecast(forecast) {
+    var card = el('wxCard');
+    if (!card || !forecast) return;
+
+    var place = el('wxPlace');
+    if (place) place.textContent = forecast.place ? ' — ' + forecast.place : '';
+
+    var stormy = renderForecastAlerts(forecast.alerts);
+    renderForecastHours(forecast.hours);
+    renderForecastPeriods(forecast.periods);
+
+    /* How old it is, said plainly. A card that quietly stopped updating three
+       hours ago — still showing this morning's "clear" — is worse than no card
+       at all on a screen people make outdoor-safety decisions in front of. */
+    var updated = el('wxUpdated');
+    var age = forecast.updated_at ? serverNow() - forecast.updated_at : null;
+    var stale = age === null || age > (forecast.stale_after || 3600);
+    if (updated) {
+      if (age === null) {
+        updated.textContent = 'not fetched yet';
+      } else {
+        updated.textContent = 'updated ' + fmtDuration(Math.max(0, age)) + ' ago'
+          + (stale ? ' — not refreshing' : '');
+      }
+      updated.className = stale ? 'muted wx-stale' : 'muted';
+    }
+
+    var note = el('wxNote');
+    if (note) {
+      if (!forecast.ok && forecast.message) {
+        note.textContent = forecast.message;
+        note.className = 'wx-note problem';
+      } else if (stale) {
+        note.textContent = 'This forecast is out of date. It is refreshed by the scheduled task — check the '
+          + 'data source panel below if that has stopped running.';
+        note.className = 'wx-note problem';
+      } else {
+        note.textContent = 'Forecast and warnings from the US National Weather Service.';
+        note.className = 'wx-note';
+      }
+    }
+
+    card.className = 'panel wx' + (stormy ? ' has-warning' : '') + (stale ? ' is-stale' : '');
+  }
+
+  function applyForecast(forecast) {
+    try {
+      renderForecast(forecast);
+    } catch (e) {
+      // Never let the weather card break the page it sits on top of.
+      var note = el('wxNote');
+      if (note) {
+        note.textContent = 'The forecast could not be displayed.';
+        note.className = 'wx-note problem';
+      }
+    }
+  }
+
+  if (boot.forecast) applyForecast(boot.forecast);
+
   // ---------- notifications ----------
 
   function notify(title, body) {
@@ -645,6 +864,18 @@
     return post('run_tick').then(function (data) {
       toast(data.message || data.error, data.ok ? 'ok' : 'info');
       return poll();
+    });
+  });
+
+  wireButton('wxRefreshBtn', function () {
+    return post('refresh_forecast').then(function (data) {
+      if (data.forecast) {
+        applyForecast(data.forecast);
+        state.forecastStamp = data.forecast.stamp || state.forecastStamp;
+      }
+      // Success here is unremarkable — the card visibly changes — so only say
+      // something when it did not work.
+      if (!data.ok) toast(data.error || data.message || 'The forecast could not be refreshed.', 'info');
     });
   });
 
@@ -778,6 +1009,10 @@
     renderState(data);
     renderStats(data);
     renderSource(data);
+    // Only sent when it has changed; the stamp comes back either way so the
+    // next poll can go on asking for nothing.
+    if (data.forecast) applyForecast(data.forecast);
+    if (typeof data.forecast_stamp === 'string') state.forecastStamp = data.forecast_stamp;
     // Every poll, not only the ones that brought something. Strikes age out on
     // a timer, and a log still listing a strike from two hours ago reads as a
     // storm that is still going.
@@ -791,8 +1026,11 @@
 
     // stateUrl already carries a query string on a kiosk display, which is
     // authenticated by a token in the URL rather than by a session.
-    var url = state.maxId
-      ? boot.stateUrl + (boot.stateUrl.indexOf('?') === -1 ? '?' : '&') + 'since_id=' + state.maxId
+    var params = [];
+    if (state.maxId) params.push('since_id=' + state.maxId);
+    if (state.forecastStamp) params.push('forecast=' + encodeURIComponent(state.forecastStamp));
+    var url = params.length
+      ? boot.stateUrl + (boot.stateUrl.indexOf('?') === -1 ? '?' : '&') + params.join('&')
       : boot.stateUrl;
     var request = fetchState(url)
       .then(function (response) {

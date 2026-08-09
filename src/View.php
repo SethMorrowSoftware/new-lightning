@@ -175,6 +175,9 @@ final class View
         if (Settings::getString('provider') === 'blitzortung') {
             $bits[] = 'Strike data from the Blitzortung.org volunteer network.';
         }
+        if (Settings::getBool('nws_enabled')) {
+            $bits[] = 'Forecast and warnings from the US National Weather Service.';
+        }
         $bits[] = 'Storm Watch v' . SW_VERSION . '.';
         return implode(' ', array_map(static fn(string $b): string => Http::e($b), $bits))
             . '<br>Lightning detection is an aid, not a guarantee. Follow your venue\'s severe weather policy.';
