@@ -623,6 +623,98 @@ T::group('Alert cooldown');
     $applyCooldown(30);
 }
 
+T::group('A storm that has been all-cleared stays closed');
+{
+    // The lookback for "is there lightning about" is the cooldown period, and
+    // the cooldown is a setting. Lengthening it must not reach back over a
+    // storm that is finished and already all-cleared.
+    resetData();
+    Settings::put([
+        'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+        'all_clear_minutes' => 30, 'cooldown_scope' => 'alert', 'notify_all_clear' => true,
+    ]);
+
+    // An afternoon storm, run to its all clear.
+    placeStrike(5.0, 33.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'the afternoon storm alerts');
+    Database::instance()->run('UPDATE strikes SET struck_at = ?, received_at = ?', [time() - 8400, time() - 8400]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'and is all-cleared once it is over');
+    Database::instance()->run('UPDATE alert_state SET notified_at = ? WHERE id = 1', [time() - 6600]);
+
+    // Hours later, under a clear sky, the operator wants a longer hold.
+    Settings::put(['all_clear_minutes' => 240]);
+    AlertEngine::evaluate();
+    T::same('clear', AlertEngine::publicState()['level'], 'a longer cooldown does not revive a finished storm');
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'and does not alert on it a second time');
+
+    // A genuinely new strike still gets through immediately.
+    placeStrike(6.0, 210.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'a real strike still alerts under the longer hold');
+
+    // A strike that merely reached us late is new information, not history:
+    // it struck before the last all clear but arrived after it.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30]);
+    Database::instance()->run(
+        'UPDATE alert_state SET notified_level = ?, notified_at = ? WHERE id = 1',
+        ['clear', time() - 60]
+    );
+    $late = placeStrike(4.0, 250.0, 15 * 60);   // struck 15 min ago, arriving now
+    T::ok($late !== null, 'the late strike is stored');
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'a late-arriving strike still raises the alert');
+
+    Settings::put(['all_clear_minutes' => 30]);
+}
+
+T::group('Clearing the strike log resets the announcement too');
+{
+    // The button says it resets the alert state. If it left "a warning has been
+    // announced" behind, the next tick would find a warning with no strikes
+    // under it and post an all clear drawn from an empty table.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30, 'notify_all_clear' => true]);
+    placeStrike(4.0, 88.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'a warning is live');
+
+    Strikes::deleteAll();
+    AlertEngine::reset();
+    AlertEngine::evaluate();
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'clearing the log does not broadcast an all clear');
+    T::same('clear', AlertEngine::publicState()['level'], 'and the state is back to a standing start');
+
+    placeStrike(4.0, 89.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'the next strike alerts normally');
+}
+
+T::group('Closing time honours a mute');
+{
+    // Mute is the one setting that governs everything reaching Slack and
+    // email. Closing time is not an exception to it.
+    resetData();
+    Settings::put(['all_clear_minutes' => 30, 'notify_all_clear' => true]);
+    placeStrike(4.0, 200.0);
+    AlertEngine::evaluate();
+    AlertEngine::mute(30);
+
+    AlertEngine::standDownForClosedHours();
+    T::same(0, count(Events::recent(200, 'alert.all_clear')), 'no stand-down is posted while muted');
+    T::ok(count(Events::recent(200, 'alert.stand_down')) >= 1, 'but it is recorded in the log');
+
+    // Un-muted, the same stand-down is announced.
+    resetData();
+    placeStrike(4.0, 201.0);
+    AlertEngine::evaluate();
+    AlertEngine::unmute();
+    AlertEngine::standDownForClosedHours();
+    T::ok(count(Events::recent(200, 'alert.all_clear')) >= 1, 'un-muted, the stand-down is announced');
+}
+
 T::group('Housekeeping cannot cause a false all clear');
 {
     // The cooldown is decided by asking the strikes table "has anything struck

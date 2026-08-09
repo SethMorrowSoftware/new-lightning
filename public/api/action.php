@@ -76,7 +76,11 @@ switch ($action) {
 
     case 'clear_strikes':
         $removed = Strikes::deleteAll();
-        AlertEngine::evaluate(false);
+        // The button warns that this also resets the alert state, and it has to
+        // mean it: leaving an announced warning on record with no strikes left
+        // to justify it makes the next cron tick post an all clear drawn from
+        // an empty table.
+        AlertEngine::reset();
         Events::log('system.strikes_cleared', Events::SEVERITY_WARNING, sprintf('Strike history cleared (%d rows).', $removed), []);
         Http::json(['ok' => true, 'message' => sprintf('Cleared %d stored strike(s).', $removed), 'state' => AlertEngine::publicState()]);
 

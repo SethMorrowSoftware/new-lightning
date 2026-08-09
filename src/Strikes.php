@@ -147,16 +147,30 @@ final class Strikes
      * The most recent strike inside a radius — used to decide whether the
      * all-clear timer has expired.
      *
+     * $receivedAfter restricts the answer to strikes that arrived at or after a
+     * given moment. The alert engine uses it to ask "is there anything new?" as
+     * distinct from "is there anything on record", which are different
+     * questions once a storm has already been announced and closed out.
+     *
+     * The boundary is inclusive on purpose. Timestamps here are whole seconds,
+     * and a strike inside the alert radius cannot have been on record when an
+     * all clear was decided — it would have prevented it — so one sharing that
+     * second arrived afterwards and is new. Excluding it would drop a real
+     * strike, which is the one mistake this system must not make.
+     *
      * @return array<string,mixed>|null
      */
-    public static function latestWithin(float $radiusMi, int $withinSeconds): ?array
+    public static function latestWithin(float $radiusMi, int $withinSeconds, ?int $receivedAfter = null): ?array
     {
-        return Database::instance()->first(
-            'SELECT id, struck_at, lat, lon, distance_mi, bearing_deg, source
-             FROM strikes WHERE distance_mi <= ? AND struck_at >= ?
-             ORDER BY struck_at DESC, id DESC LIMIT 1',
-            [$radiusMi, time() - $withinSeconds]
-        );
+        $sql = 'SELECT id, struck_at, lat, lon, distance_mi, bearing_deg, source
+                FROM strikes WHERE distance_mi <= ? AND struck_at >= ?';
+        $params = [$radiusMi, time() - $withinSeconds];
+        if ($receivedAfter !== null) {
+            $sql .= ' AND received_at >= ?';
+            $params[] = $receivedAfter;
+        }
+        $sql .= ' ORDER BY struck_at DESC, id DESC LIMIT 1';
+        return Database::instance()->first($sql, $params);
     }
 
     /**

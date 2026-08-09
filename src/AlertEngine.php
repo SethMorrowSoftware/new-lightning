@@ -156,21 +156,36 @@ final class AlertEngine
 
         $cooldownRadius = self::cooldownRadius();
 
-        $lastInAlert = Strikes::latestWithin($alertRadius, $window);
-        $lastInWatch = Strikes::latestWithin($watchRadius, $window);
+        $previousLevel = (string) $state['level'];
+        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
+        $notifiedAt = (int) ($state['notified_at'] ?? 0);
+
+        // Once an all clear has gone out, that storm is closed: its strikes are
+        // what the all clear was *about*, and they must never re-open it. Only
+        // something that has arrived since can raise the next warning.
+        //
+        // Without this the lookback is the cooldown setting itself, which an
+        // operator can lengthen whenever they like. Raising the hold from 30
+        // minutes to four hours on a clear evening then reaches back over an
+        // afternoon storm that is long over and already all-cleared, and posts
+        // "move activities indoors" under an empty sky.
+        //
+        // The bound is on arrival, not on strike time, so a strike that merely
+        // reached us late still alerts — that one is genuinely new information.
+        $closedOutAt = ($notifiedLevel === self::LEVEL_CLEAR && $notifiedAt > 0) ? $notifiedAt : null;
+
+        $lastInAlert = Strikes::latestWithin($alertRadius, $window, $closedOutAt);
+        $lastInWatch = Strikes::latestWithin($watchRadius, $window, $closedOutAt);
         // The cooldown may be measured over a wider ring than the one that
         // triggers an alert, so a storm circling just outside the alert radius
-        // does not produce a premature all clear.
-        $lastInCooldown = $cooldownRadius > $alertRadius
-            ? Strikes::latestWithin($cooldownRadius, $window)
-            : $lastInAlert;
+        // does not produce a premature all clear. It also asks a different
+        // question from the two above — "has the sky been quiet?" rather than
+        // "is there anything new?" — so it reads everything on record.
+        $lastInCooldown = Strikes::latestWithin(max($cooldownRadius, $alertRadius), $window);
 
         $nearest = Strikes::nearest($window);
 
-        $previousLevel = (string) $state['level'];
         $muted = isset($state['muted_until']) && (int) $state['muted_until'] > $now;
-        $notifiedLevel = $state['notified_level'] !== null ? (string) $state['notified_level'] : self::LEVEL_CLEAR;
-        $notifiedAt = (int) ($state['notified_at'] ?? 0);
         $notifiedNearest = $state['notified_nearest_mi'] !== null ? (float) $state['notified_nearest_mi'] : null;
 
         $wasElevated = $previousLevel === self::LEVEL_WARNING || $notifiedLevel === self::LEVEL_WARNING;
@@ -489,7 +504,11 @@ final class AlertEngine
                         : ''
                 )
             );
-            if (Settings::getBool('notify_all_clear')) {
+            // A mute is one setting that governs everything reaching Slack and
+            // email; closing time is not an exception to it. The log still gets
+            // the line either way, so the record is complete.
+            $muted = isset($state['muted_until']) && (int) $state['muted_until'] > time();
+            if (Settings::getBool('notify_all_clear') && !$muted) {
                 self::dispatch($alert);
             } else {
                 Events::log('alert.stand_down', Events::SEVERITY_INFO, $alert->title, []);
@@ -502,6 +521,29 @@ final class AlertEngine
             'notified_nearest_mi' => null,
             'notified_at' => time(),
             'since' => time(),
+        ]);
+    }
+
+    /**
+     * Put the state machine back to a standing start without announcing
+     * anything.
+     *
+     * Used when the strike history is deleted. The evidence the engine reasons
+     * from has just gone, so leaving "a warning has been announced" on record
+     * means the next cron tick sees a warning with no strikes behind it and
+     * posts an all clear — one derived from an empty table rather than from a
+     * quiet sky, and quite possibly while the storm is still overhead.
+     */
+    public static function reset(): void
+    {
+        self::updateState([
+            'level' => self::LEVEL_CLEAR,
+            'since' => time(),
+            'nearest_mi' => null,
+            'nearest_at' => null,
+            'notified_level' => self::LEVEL_CLEAR,
+            'notified_at' => time(),
+            'notified_nearest_mi' => null,
         ]);
     }
 
