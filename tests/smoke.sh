@@ -208,6 +208,19 @@ code=$(curl -s -o "${WORK}/badradius.html" -w '%{http_code}' -c "$JAR" -b "$JAR"
   -d "display_radius_mi=30" "${BASE}/settings.php?tab=alerts")
 contains "${WORK}/badradius.html" "Nothing was saved" "an inconsistent radius set is rejected"
 
+# The map style reaches the dashboard, where the script reads it to pick both
+# the tiles and the ring colours.
+VCSRF=$(curl -s -c "$JAR" -b "$JAR" "${BASE}/settings.php?tab=venue" \
+  | grep -o 'name="csrf_token" value="[^"]*"' | head -1 | sed 's/.*value="//;s/"//')
+curl -s -o "${WORK}/mapstyle.html" -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${VCSRF}" -d "action=save" -d "map_style=light" \
+  "${BASE}/settings.php?tab=venue"
+contains "${WORK}/mapstyle.html" "Settings saved" "the map style saves"
+curl -s -o "${WORK}/dash-style.html" -c "$JAR" -b "$JAR" "${BASE}/index.php"
+contains "${WORK}/dash-style.html" '"mapStyle":"light"' "the map style reaches the dashboard script"
+curl -s -o /dev/null -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${VCSRF}" -d "action=save" -d "map_style=muted" "${BASE}/settings.php?tab=venue"
+
 # The data source tab, and the provider limits that keep a capped endpoint
 # honest. A watch ring wider than the feed answers for is the dangerous case:
 # it looks fine and silently stops seeing storms.

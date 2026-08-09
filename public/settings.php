@@ -35,7 +35,8 @@ if (!isset($tabs[$tab])) {
 /** Which settings each tab owns, so a save never touches another tab's values. */
 $tabFields = [
     'venue' => ['venue_name', 'venue_address', 'venue_lat', 'venue_lon', 'timezone', 'units',
-                'map_zoom', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds', 'marker_ttl_minutes'],
+                'map_zoom', 'map_style', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds',
+                'marker_ttl_minutes'],
     'alerts' => ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
                  'cooldown_scope', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
                  'notify_all_clear', 'notify_errors', 'monitor_schedule_enabled',
@@ -236,6 +237,15 @@ View::header('settings');
     <div class="panel">
       <div class="panel-title">Map</div>
       <div class="field-grid2">
+        <div class="field">
+          <label for="map_style">Map style</label>
+          <select id="map_style" name="map_style">
+            <option value="muted"<?= $selected('map_style', 'muted') ?>>Muted — easiest to read</option>
+            <option value="dark"<?= $selected('map_style', 'dark') ?>>Dark — matches the dashboard</option>
+            <option value="light"<?= $selected('map_style', 'light') ?>>Light — best in daylight</option>
+          </select>
+          <div class="field-note">Dark looks the part indoors but is hard to read on a phone outside. Free public tiles — no account needed.</div>
+        </div>
         <div class="field">
           <label for="radar_overlay">Radar overlay</label>
           <select id="radar_overlay" name="radar_overlay">
