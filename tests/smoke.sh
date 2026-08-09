@@ -350,6 +350,40 @@ done
 contains "${WORK}/ingest-closed.json" '"monitoring":false' "ingest reports that the venue is closed"
 contains "${WORK}/ingest-closed.json" '"stored":1' "strikes are still recorded while closed"
 
+# Lightning within thirty miles happens a few days a month, so "a strike
+# arrived recently" cannot tell a working relay from a tab somebody closed.
+# An empty check-in is the liveness signal, and it must be accepted and
+# recorded.
+code=$(curl -s -o "${WORK}/ingest-beat.json" -w '%{http_code}' -H 'Content-Type: application/json' \
+  -H "X-Ingest-Token: ${INGEST_TOKEN}" -d '{"strikes":[]}' "${BASE}/api/ingest.php")
+status_is 200 "$code" "an empty relay check-in is accepted"
+contains "${WORK}/ingest-beat.json" '"stored":0' "and stores nothing"
+
+BEAT=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+$r = StormWatch\Runner::lastRun("poll", "relay");
+echo $r === null ? "none" : $r["message"];
+')
+case "$BEAT" in
+  *"checked in"*) green "the check-in is recorded as relay liveness" ;;
+  *)              red "the check-in is recorded as relay liveness (got: ${BEAT})" ;;
+esac
+
+# With the relay selected and a fresh check-in, the dashboard must read healthy
+# even though no lightning has been seen.
+HEALTH=$(php -r '
+require "'"${ROOT}"'/src/bootstrap.php";
+StormWatch\Settings::putRaw("provider", "relay");
+$s = StormWatch\Runner::status();
+echo json_encode(["healthy" => $s["source_healthy"], "message" => $s["source_message"]]);
+')
+case "$HEALTH" in
+  *'"healthy":true'*) green "a checked-in relay reads healthy during calm weather" ;;
+  *)                  red "a checked-in relay reads healthy during calm weather (got: ${HEALTH})" ;;
+esac
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
+
+
 ALERTS_AFTER=$(countAlerts)
 check "no alert is dispatched while the venue is closed (${ALERTS_BEFORE} before, ${ALERTS_AFTER} after)" \
   "$([ "$ALERTS_BEFORE" = "$ALERTS_AFTER" ] && echo 0 || echo 1)"
@@ -384,6 +418,23 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: applicat
   -d '{"action":"mute","minutes":30}' "${BASE}/api/action.php?kiosk=${KIOSK_TOKEN}")
 check "a kiosk token cannot perform operator actions (got HTTP ${code})" \
   "$([ "$code" = "401" ] || [ "$code" = "419" ] && echo 0 || echo 1)"
+
+group "Public dashboard is read only"
+# The ingest token is a write credential. A public dashboard is read only.
+php "${ROOT}/bin/stormwatch.php" set provider relay >/dev/null 2>&1
+php "${ROOT}/bin/stormwatch.php" set dashboard_public 1 >/dev/null 2>&1
+PUBJAR="${WORK}/pub.txt"
+curl -s -o "${WORK}/public-dash.html" -c "$PUBJAR" -b "$PUBJAR" "${BASE}/index.php"
+contains "${WORK}/public-dash.html" "Live map" "a public dashboard renders for an anonymous visitor"
+if grep -qF "${INGEST_TOKEN}" "${WORK}/public-dash.html"; then
+  red "the ingest token is not handed to an anonymous visitor"
+else
+  green "the ingest token is not handed to an anonymous visitor"
+fi
+curl -s -o "${WORK}/kiosk-relay.html" "${BASE}/index.php?kiosk=${KIOSK_TOKEN}"
+contains "${WORK}/kiosk-relay.html" "${INGEST_TOKEN}" "but the venue's own kiosk display still gets it"
+php "${ROOT}/bin/stormwatch.php" set dashboard_public 0 >/dev/null 2>&1
+php "${ROOT}/bin/stormwatch.php" set provider simulator >/dev/null 2>&1
 
 group "History and CLI"
 code=$(curl -s -o "${WORK}/history.html" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/history.php")

@@ -60,7 +60,11 @@ $boot = [
     'provider' => $provider,
 ];
 
-if ($provider === 'relay') {
+// The relay block carries the ingest token, which is a write credential: it
+// posts strikes the alert engine acts on. Staff and the venue's own kiosk
+// display get it — that is what runs the relay. An anonymous viewer of a
+// public dashboard does not, because "read only" has to mean it.
+if ($provider === 'relay' && ($canAct || $kioskToken !== null)) {
     $boot['relay'] = [
         'ingestUrl' => Http::url('api/ingest.php'),
         'token' => Settings::getString('ingest_token'),

@@ -78,22 +78,25 @@ if ($stored > 0 && $monitoring) {
     AlertEngine::evaluate();
 }
 
-// Record the run so the dashboard's source status reflects relay activity.
-if ($stored > 0 || $records !== []) {
-    Runner::recordRun(
-        'poll',
-        'relay',
-        true,
-        $stored,
-        sprintf(
+// Always record the run, including an empty check-in. Lightning within thirty
+// miles happens a few days a month, so "strikes have arrived recently" cannot
+// tell a working relay from a tab somebody closed — and it is the tab closing
+// that stops the alerts. The check-in is the liveness signal.
+Runner::recordRun(
+    'poll',
+    'relay',
+    true,
+    $stored,
+    $records === []
+        ? 'Browser relay checked in; no strikes within the display radius.'
+        : sprintf(
             'Browser relay delivered %d record(s); stored %d.%s',
             count($records),
             $stored,
             $monitoring ? '' : ' Outside operating hours, so no alert was raised.'
         ),
-        $startedAt
-    );
-}
+    $startedAt
+);
 
 Http::json([
     'ok' => true,

@@ -187,14 +187,40 @@ final class Runner
         $cronHealthy = $cronAge !== null && $cronAge < 300;
 
         if ($provider === 'relay') {
+            // What matters is whether the tab is still there, not whether there
+            // has been lightning. A venue can go weeks without a strike inside
+            // thirty miles, and a badge that reads "feed problem" for weeks is
+            // a badge nobody reads on the day it means something. The relay
+            // checks in on a timer even with nothing to send.
+            $lastCheckIn = $lastIngest !== null ? (int) $lastIngest['started_at'] : null;
             $lastRelay = Database::instance()->first(
                 "SELECT MAX(received_at) AS last_at FROM strikes WHERE source = 'relay'"
             );
             $lastRelayAt = isset($lastRelay['last_at']) && $lastRelay['last_at'] !== null ? (int) $lastRelay['last_at'] : null;
-            $sourceHealthy = $lastRelayAt !== null && ($now - $lastRelayAt) < 900;
-            $sourceMessage = $lastRelayAt === null
-                ? 'No strikes have been relayed yet. Keep a dashboard tab open on a machine that stays on.'
-                : sprintf('Last relayed strike %s ago.', self::humanAge($now - $lastRelayAt));
+
+            // A tab still running an older script does not check in, so accept
+            // a recently relayed strike as proof of life too.
+            $freshCheckIn = $lastCheckIn !== null && ($now - $lastCheckIn) < 300;
+            $freshStrike = $lastRelayAt !== null && ($now - $lastRelayAt) < 900;
+            $sourceHealthy = $freshCheckIn || $freshStrike;
+
+            if ($lastCheckIn === null && $lastRelayAt === null) {
+                $sourceMessage = 'No browser relay has ever checked in. Open the dashboard on a machine that stays on '
+                    . 'and leave the tab open.';
+            } elseif ($sourceHealthy) {
+                $sourceMessage = $lastRelayAt !== null
+                    ? sprintf(
+                        'Relay tab connected; last relayed strike %s ago.',
+                        self::humanAge($now - $lastRelayAt)
+                    )
+                    : 'Relay tab connected; no lightning within the display radius yet.';
+            } else {
+                $sourceMessage = sprintf(
+                    'The relay tab has not checked in for %s. Lightning is not being collected — reopen the dashboard '
+                    . 'on the machine that runs it.',
+                    self::humanAge($now - (int) max((int) $lastCheckIn, (int) $lastRelayAt))
+                );
+            }
         } else {
             $sourceHealthy = $lastIngest !== null && (int) $lastIngest['ok'] === 1;
             $sourceMessage = $lastIngest !== null
