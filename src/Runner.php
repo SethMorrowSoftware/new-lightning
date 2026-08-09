@@ -177,7 +177,9 @@ final class Runner
         $provider = Settings::getString('provider');
         $lastTick = self::lastRun('tick');
         $lastIngestJob = $provider === 'blitzortung' ? 'worker' : 'poll';
-        $lastIngest = self::lastRun($lastIngestJob);
+        // Narrowed to the configured provider, so another source's run cannot
+        // stand in for this one's health.
+        $lastIngest = self::lastRun($lastIngestJob, $provider);
         $now = time();
 
         $cronAge = $lastTick !== null ? $now - (int) $lastTick['started_at'] : null;
@@ -222,13 +224,27 @@ final class Runner
         ];
     }
 
-    /** @return array<string,mixed>|null */
-    public static function lastRun(string $job): ?array
+    /**
+     * The most recent run of a job, optionally narrowed to one provider.
+     *
+     * The narrowing matters: the browser relay records its deliveries under the
+     * same 'poll' job name as the REST poller. Without it, a relay tab someone
+     * forgot to close after switching to a REST feed keeps answering "we polled
+     * a moment ago" on the REST poller's behalf — so the endpoint is never
+     * polled again and the dashboard reports the relay's success as the feed's.
+     *
+     * @return array<string,mixed>|null
+     */
+    public static function lastRun(string $job, ?string $provider = null): ?array
     {
-        return Database::instance()->first(
-            'SELECT * FROM runs WHERE job = ? ORDER BY id DESC LIMIT 1',
-            [$job]
-        );
+        $sql = 'SELECT * FROM runs WHERE job = ?';
+        $params = [$job];
+        if ($provider !== null) {
+            $sql .= ' AND provider = ?';
+            $params[] = $provider;
+        }
+        $sql .= ' ORDER BY id DESC LIMIT 1';
+        return Database::instance()->first($sql, $params);
     }
 
     public static function recordRun(
@@ -281,7 +297,7 @@ final class Runner
     private static function restPollDue(): bool
     {
         $interval = self::restPollInterval();
-        $last = self::lastRun('poll');
+        $last = self::lastRun('poll', 'rest');
         if ($last === null) {
             return true;
         }

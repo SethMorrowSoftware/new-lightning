@@ -896,6 +896,22 @@ T::group('Adaptive polling');
     T::same(60, Runner::restPollInterval(), 'a misconfigured active cadence never slows things down');
     Settings::put(['rest_poll_seconds' => 300, 'rest_active_poll_seconds' => 60]);
     resetData();
+
+    // The browser relay records its deliveries under the same 'poll' job name
+    // as the REST poller. A relay tab left open after switching to a REST feed
+    // must not be able to answer "we polled a moment ago" on its behalf — that
+    // starves the real feed while the dashboard reports the relay's success.
+    Settings::putRaw('provider', 'rest');
+    Runner::recordRun('poll', 'rest', true, 0, 'REST poll', time() - 600);
+    Runner::recordRun('poll', 'relay', true, 1, 'Browser relay delivered 1 record(s).', time());
+
+    $restRun = Runner::lastRun('poll', 'rest');
+    T::ok($restRun !== null && $restRun['provider'] === 'rest', 'the REST run is found past a newer relay run');
+    T::same('REST poll', Runner::status()['source_message'], 'feed health reports the REST feed, not the relay');
+
+    Database::instance()->run('DELETE FROM runs');
+    Settings::putRaw('provider', 'simulator');
+    resetData();
 }
 
 T::group('Provider limits: radius cap and data window');
