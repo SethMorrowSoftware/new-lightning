@@ -26,6 +26,9 @@ final class Alert
     public int $strikeCount = 0;
     public int $createdAt;
 
+    /** Set on previews: critical-looking messages that must not page the channel. */
+    public bool $suppressMentions = false;
+
     /** @var array<string,string> extra "label => value" rows shown in the message */
     public array $details = [];
 

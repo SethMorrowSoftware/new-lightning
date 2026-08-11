@@ -42,7 +42,11 @@ $tabFields = [
                  'notify_all_clear', 'notify_errors', 'monitor_schedule_enabled',
                  'monitor_lead_minutes', 'monitor_trail_minutes'],
     'slack' => ['slack_enabled', 'slack_mode', 'slack_bot_token', 'slack_webhook_url', 'slack_channel',
-                'slack_mention', 'slack_extra_mention', 'slack_username', 'slack_icon_emoji'],
+                'slack_mention', 'slack_extra_mention', 'slack_username', 'slack_icon_emoji',
+                'slack_style', 'slack_color_warning', 'slack_color_watch', 'slack_color_all_clear',
+                'slack_tpl_warning_title', 'slack_tpl_warning_body', 'slack_tpl_watch_title',
+                'slack_tpl_watch_body', 'slack_tpl_all_clear_title', 'slack_tpl_all_clear_body',
+                'slack_tpl_update_title', 'slack_tpl_update_body'],
     'email' => ['email_enabled', 'email_to', 'email_from', 'email_from_name', 'email_transport',
                 'smtp_host', 'smtp_port', 'smtp_secure', 'smtp_user', 'smtp_pass'],
     'source' => ['provider', 'worker_seconds', 'blitz_servers', 'blitz_init_json', 'rest_endpoint',
@@ -603,17 +607,106 @@ View::header('settings');
           <input type="text" id="slack_icon_emoji" name="slack_icon_emoji" value="<?= Http::e($value('slack_icon_emoji')) ?>" placeholder="zap">
         </div>
       </div>
+      <div class="field">
+        <label for="slack_style">Layout</label>
+        <select id="slack_style" name="slack_style">
+          <option value="detailed"<?= $selected('slack_style', 'detailed') ?>>Detailed — headline, message, strike facts and a footer</option>
+          <option value="compact"<?= $selected('slack_style', 'compact') ?>>Compact — one short paragraph, nothing else</option>
+        </select>
+        <div class="field-note">Compact suits a busy channel. Detailed is the full card: distance, direction, time and a dashboard link.</div>
+      </div>
+      <div class="field-grid3">
+        <div class="field">
+          <label for="slack_color_warning">Warning colour</label>
+          <input type="color" id="slack_color_warning" name="slack_color_warning" value="<?= Http::e($value('slack_color_warning')) ?>" class="<?= $errorClass('slack_color_warning') ?>">
+          <?= $errorNote('slack_color_warning') ?>
+        </div>
+        <div class="field">
+          <label for="slack_color_watch">Watch colour</label>
+          <input type="color" id="slack_color_watch" name="slack_color_watch" value="<?= Http::e($value('slack_color_watch')) ?>" class="<?= $errorClass('slack_color_watch') ?>">
+          <?= $errorNote('slack_color_watch') ?>
+        </div>
+        <div class="field">
+          <label for="slack_color_all_clear">All-clear colour</label>
+          <input type="color" id="slack_color_all_clear" name="slack_color_all_clear" value="<?= Http::e($value('slack_color_all_clear')) ?>" class="<?= $errorClass('slack_color_all_clear') ?>">
+          <?= $errorNote('slack_color_all_clear') ?>
+        </div>
+      </div>
+      <div class="field-note">The stripe down the side of each message. Updates during a storm use the warning colour. The standards are #FF4D5E, #FFB627 and #4ADE9C.</div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-title">Message text</div>
+      <p class="prose">
+        Leave any field blank to keep the standard wording. These placeholders are filled in when the
+        alert is sent: <code>{venue}</code> <code>{venue_address}</code> <code>{distance}</code>
+        <code>{direction}</code> <code>{time}</code> <code>{alert_radius}</code>
+        <code>{watch_radius}</code> <code>{cooldown_minutes}</code> <code>{strikes}</code>.
+        A custom headline replaces the standard emoji too, so include your own if you want one.
+        Slack's <b>*bold*</b> and <b>_italic_</b> work in the message body. This changes Slack only —
+        email keeps the standard wording.
+      </p>
+
+      <div class="field">
+        <label for="slack_tpl_warning_title">Warning — headline</label>
+        <input type="text" id="slack_tpl_warning_title" name="slack_tpl_warning_title" maxlength="150"
+               value="<?= Http::e($value('slack_tpl_warning_title')) ?>"
+               placeholder="⚡ Lightning within {alert_radius} of {venue}">
+      </div>
+      <div class="field">
+        <label for="slack_tpl_warning_body">Warning — message</label>
+        <textarea id="slack_tpl_warning_body" name="slack_tpl_warning_body" maxlength="1000"
+                  placeholder="A strike has been detected inside the {alert_radius} alert radius. Move activities indoors and hold until the all clear."><?= Http::e($value('slack_tpl_warning_body')) ?></textarea>
+      </div>
+
+      <div class="field">
+        <label for="slack_tpl_watch_title">Watch — headline</label>
+        <input type="text" id="slack_tpl_watch_title" name="slack_tpl_watch_title" maxlength="150"
+               value="<?= Http::e($value('slack_tpl_watch_title')) ?>"
+               placeholder="⚠️ Storm approaching {venue}">
+      </div>
+      <div class="field">
+        <label for="slack_tpl_watch_body">Watch — message</label>
+        <textarea id="slack_tpl_watch_body" name="slack_tpl_watch_body" maxlength="1000"
+                  placeholder="Lightning inside the {watch_radius} watch radius, still outside the {alert_radius} alert radius. Keep an eye on it."><?= Http::e($value('slack_tpl_watch_body')) ?></textarea>
+      </div>
+
+      <div class="field">
+        <label for="slack_tpl_all_clear_title">All clear — headline</label>
+        <input type="text" id="slack_tpl_all_clear_title" name="slack_tpl_all_clear_title" maxlength="150"
+               value="<?= Http::e($value('slack_tpl_all_clear_title')) ?>"
+               placeholder="✅ All clear at {venue}">
+      </div>
+      <div class="field">
+        <label for="slack_tpl_all_clear_body">All clear — message</label>
+        <textarea id="slack_tpl_all_clear_body" name="slack_tpl_all_clear_body" maxlength="1000"
+                  placeholder="No lightning for {cooldown_minutes} minutes. Normal operations can resume."><?= Http::e($value('slack_tpl_all_clear_body')) ?></textarea>
+      </div>
+
+      <div class="field">
+        <label for="slack_tpl_update_title">Storm update — headline</label>
+        <input type="text" id="slack_tpl_update_title" name="slack_tpl_update_title" maxlength="150"
+               value="<?= Http::e($value('slack_tpl_update_title')) ?>"
+               placeholder="⚡ Storm update — lightning still within {alert_radius}">
+        <div class="field-note">Sent while a warning stays active, when re-alerts are enabled on the Alert rules tab.</div>
+      </div>
+      <div class="field">
+        <label for="slack_tpl_update_body">Storm update — message</label>
+        <textarea id="slack_tpl_update_body" name="slack_tpl_update_body" maxlength="1000"
+                  placeholder="Lightning is still being detected. Nearest strike {distance} {direction} of the venue at {time}."><?= Http::e($value('slack_tpl_update_body')) ?></textarea>
+      </div>
     </div>
 
     <div class="btn-row">
       <button type="submit" class="btn primary">Save Slack settings</button>
       <button type="button" class="btn" data-test="test_slack">Send a test message</button>
+      <button type="button" class="btn" data-test="preview_slack">Preview the warning message</button>
     </div>
     <div id="testResult"></div>
 
     <div class="save-bar">
-      <span class="hint">Testing does not save. Unsaved credentials and intervals are lost if you leave this tab.</span>
-      <button type="submit" class="btn primary">Save data source</button>
+      <span class="hint">Testing and previewing do not save — they post using the settings currently stored, so save first to see new wording.</span>
+      <button type="submit" class="btn primary">Save Slack settings</button>
     </div>
   </form>
 
