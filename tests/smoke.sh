@@ -169,7 +169,14 @@ DASHV2=$(grep -o 'js/dashboard\.js?v=[^"]*' "${WORK}/dash2.html" | head -1 | sed
 check "changing an asset changes its URL, so browsers refetch it" \
   "$([ -n "$DASHV2" ] && [ "$DASHV" != "$DASHV2" ] && echo 0 || echo 1)"
 contains "${WORK}/dash.html" "Strike log" "the strike log panel is present"
-contains "${WORK}/dash.html" "Data source" "the data source panel is present"
+contains "${WORK}/dash.html" 'class="log-body"' "the strike log runs the height of the map column"
+if grep -qF "Data source" "${WORK}/dash.html"; then
+  red "the data source and alerts panels stay off the dashboard"
+else
+  green "the data source and alerts panels stay off the dashboard"
+fi
+contains "${WORK}/dash.html" 'id="unmuteBtn"' "muting stays reversible from the banner"
+contains "${WORK}/dash.html" 'id="alertCountdown"' "the banner carries the all-clear countdown"
 
 code=$(curl -s -o "${WORK}/state.json" -w '%{http_code}' -c "$JAR" -b "$JAR" "${BASE}/api/state.php")
 status_is 200 "$code" "the state API answers"
@@ -526,6 +533,7 @@ php "${ROOT}/bin/stormwatch.php" set dashboard_public 1 >/dev/null 2>&1
 PUBJAR="${WORK}/pub.txt"
 curl -s -o "${WORK}/public-dash.html" -c "$PUBJAR" -b "$PUBJAR" "${BASE}/index.php"
 contains "${WORK}/public-dash.html" "Live map" "a public dashboard renders for an anonymous visitor"
+contains "${WORK}/public-dash.html" '>Sign in</a>' "and offers a way to sign in rather than stranding the operator"
 if grep -qF "${INGEST_TOKEN}" "${WORK}/public-dash.html"; then
   red "the ingest token is not handed to an anonymous visitor"
 else

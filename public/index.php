@@ -96,9 +96,21 @@ View::header('dashboard');
     <div class="t1" id="alertT1">Loading…</div>
     <div class="t2" id="alertT2">Checking the current alert state.</div>
   </div>
+  <?php /* Only during a warning hold: how long until the all clear, ticking
+           by the second. Deliberately outside the sign-in gate — the wall
+           display is where this number is actually read from. The dashboard
+           script shows it, hides it, and keeps it running. */ ?>
+  <div class="alert-countdown" id="alertCountdown" hidden>
+    <span class="cd" id="alertCountdownClock">—</span>
+    <span class="cd-l">to all clear</span>
+  </div>
   <?php if ($canAct): ?>
   <div class="alert-actions">
     <button class="btn small" id="muteBtn" type="button" title="Suppress Slack and email alerts temporarily">Mute 30m</button>
+    <?php /* Lives beside the mute button it undoes. It used to sit in the
+             alerts panel; when that panel went, muting must not become a
+             one-way door. */ ?>
+    <button class="btn small" id="unmuteBtn" type="button" style="display:none;">Un-mute alerts</button>
   </div>
   <?php endif; ?>
 </div>
@@ -162,66 +174,19 @@ View::header('dashboard');
     </div>
   </div>
 
+  <?php /* One panel, the full height of the map beside it. The feed-health
+           detail that used to live here rides on the header badge now, and the
+           deep version is on the History and Settings pages. */ ?>
   <div>
-    <div class="panel">
-      <div class="panel-title">Data source</div>
-      <div class="toggle-row" style="margin-bottom:12px;">
-        <div>
-          <div class="lbl" id="providerLabel"><?= Http::e(ucfirst($provider)) ?></div>
-          <div class="sub" id="providerSub">Checking feed health…</div>
-        </div>
-      </div>
-      <div class="status-line" style="margin-top:0;border-top:0;padding-top:0;">
-        <span class="status-dot" id="sourceDot"></span>
-        <span id="sourceText">Loading…</span>
-      </div>
-      <div class="status-line">
-        <span class="status-dot" id="cronDot"></span>
-        <span id="cronText">Checking the scheduled task…</span>
-      </div>
-      <div class="status-line">
-        <span class="status-dot" id="notifyDot"></span>
-        <span id="notifyText">Checking alert channels…</span>
-      </div>
-      <?php if ($canAct): ?>
-      <div class="btn-row" style="margin-top:14px;">
-        <a class="btn small" href="<?= Http::e(Http::url('settings.php?tab=source')) ?>">Configure</a>
-        <button class="btn small" id="runTickBtn" type="button">Run check now</button>
-      </div>
-      <?php endif; ?>
-    </div>
-
-    <div class="panel">
-      <div class="panel-title">Alerts</div>
-      <div class="row-between field">
-        <div>
-          <label style="margin-bottom:2px;">Browser notifications</label>
-          <div class="helptext">Alerts this device when a strike lands within <?= Http::e($fmt(Settings::getFloat('alert_radius_mi'))) ?>.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="notifToggle">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="helptext" style="margin-bottom:14px;">
-        Slack and email alerts are sent by the server, so they work whether or not this page is open.
-        Manage them in <a href="<?= Http::e(Http::url('settings.php?tab=slack')) ?>">Settings</a>.
-      </div>
-      <?php if ($canAct): ?>
-      <div class="btn-row">
-        <button class="btn" id="simulateBtn" type="button">Simulate strike</button>
-        <button class="btn" id="unmuteBtn" type="button" style="display:none;">Un-mute alerts</button>
-      </div>
-      <?php endif; ?>
-    </div>
-
     <div class="panel">
       <div class="panel-title">
         <span>Strike log</span>
         <?php if ($canAct): ?><button class="link" id="logClearBtn" type="button">Clear</button><?php endif; ?>
       </div>
-      <div class="log-list" id="logList">
-        <div class="log-empty">No strikes recorded yet.</div>
+      <div class="log-body">
+        <div class="log-list" id="logList">
+          <div class="log-empty">No strikes recorded yet.</div>
+        </div>
       </div>
     </div>
   </div>

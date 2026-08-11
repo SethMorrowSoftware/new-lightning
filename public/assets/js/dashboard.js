@@ -18,6 +18,7 @@
     notifPermission: (typeof Notification !== 'undefined') ? Notification.permission : 'denied',
     notifEnabled: localStorage.getItem(STORE + 'browser_notifications') === '1',
     lastAlertSignature: null,
+    allClearAt: null,      // server timestamp the countdown runs to, warning only
     pollTimer: null,
     inFlight: null,
     failures: 0,
@@ -56,6 +57,18 @@
     var h = Math.floor(m / 60);
     if (h < 24) return h + 'h ' + (m % 60) + 'm';
     return Math.floor(h / 24) + 'd';
+  }
+
+  /* The live countdown's format: to-the-second, because a number that visibly
+     ticks is how the banner says "this is being watched" — fmtDuration's "29m"
+     sitting still for a minute reads as stuck. */
+  function fmtCountdown(seconds) {
+    var s = Math.max(0, seconds);
+    var two = function (n) { return (n < 10 ? '0' : '') + n; };
+    if (s >= 3600) {
+      return Math.floor(s / 3600) + ':' + two(Math.floor((s % 3600) / 60)) + ':' + two(s % 60);
+    }
+    return Math.floor(s / 60) + ':' + two(s % 60);
   }
 
   /* Strike age, newest first.
@@ -580,6 +593,18 @@
         + fmtClock(data.state.muted_until) + '.';
     }
 
+    /* The hold countdown, live in the banner. The target comes from the
+       server — last qualifying strike plus the cooldown — so another strike
+       inside the alert radius pushes it out and the countdown visibly resets
+       on the next poll. Between polls tickCountdown() runs it by the second. */
+    var holding = level === 'warning' && data.state.all_clear_at;
+    state.allClearAt = holding ? data.state.all_clear_at : null;
+    var countdown = el('alertCountdown');
+    if (countdown) {
+      countdown.hidden = !holding;
+      if (holding) tickCountdown();
+    }
+
     var muteBtn = el('muteBtn');
     var unmuteBtn = el('unmuteBtn');
     if (muteBtn) muteBtn.style.display = data.state.muted_until ? 'none' : '';
@@ -617,7 +642,7 @@
     var holding = data.state.level === 'warning' && data.state.all_clear_at;
     if (holding) {
       var remaining = data.state.all_clear_at - data.server_time;
-      allClear.textContent = remaining > 0 ? fmtDuration(remaining) : 'due';
+      allClear.textContent = remaining > 0 ? fmtCountdown(remaining) : 'due';
     } else {
       allClear.textContent = '—';
     }
@@ -636,6 +661,28 @@
     }
   }
 
+  /* Runs the hold countdown between polls, on the server's clock. Both the
+     banner and the "all clear in" tile tick from here so the two can never
+     disagree. At zero it says "due" rather than going negative — the all
+     clear itself is the server's call to make, on its next scheduled run. */
+  function tickCountdown() {
+    if (state.allClearAt === null) return;
+    var text = state.allClearAt - serverNow() > 0
+      ? fmtCountdown(state.allClearAt - serverNow())
+      : 'due';
+    var clock = el('alertCountdownClock');
+    if (clock) clock.textContent = text;
+    var stat = el('statAllClear');
+    if (stat) stat.textContent = text;
+  }
+
+  setInterval(tickCountdown, 1000);
+
+  /* The header badge is the dashboard's one feed-health surface now that the
+     data source panel is gone. The badge keeps its short verdict; the detail
+     behind it — what failed, and what the server said — rides on the badge's
+     tooltip rather than disappearing. The full story stays on the History and
+     Settings pages. */
   function renderSource(data) {
     var source = data.source;
     var badge = el('modeBadge');
@@ -647,81 +694,42 @@
     if (source.monitoring === false) {
       badge.className = 'mode-badge';
       badgeText.textContent = 'Monitoring paused';
-      el('sourceDot').className = 'status-dot warn';
-      el('sourceText').textContent = 'Outside operating hours — lightning is not being tracked'
+      badge.title = 'Outside operating hours — lightning is not being tracked'
         + (source.next_start_text ? '. Resumes ' + source.next_start_text + '.' : '.');
-      el('cronDot').className = 'status-dot ' + (source.cron_healthy ? 'ok' : 'err');
-      el('cronText').textContent = source.schedule_summary || '';
-      el('providerLabel').textContent = PROVIDER_LABELS[source.provider] || source.provider;
-      el('providerSub').textContent = 'Paused until the venue reopens.';
-      var channelsPaused = [];
-      if (source.slack_ready) channelsPaused.push('Slack');
-      if (source.email_ready) channelsPaused.push('Email');
-      el('notifyDot').className = 'status-dot ' + (channelsPaused.length ? 'ok' : 'warn');
-      el('notifyText').textContent = channelsPaused.length
-        ? 'Server alerts go to ' + channelsPaused.join(' and ') + ' once monitoring resumes.'
-        : 'No server alert channel is switched on.';
       return;
     }
 
-    badge.className = 'mode-badge ' + (healthy ? 'live-ok' : (source.cron_healthy ? '' : 'live-err'));
-    badgeText.textContent = healthy
-      ? 'Live — ' + source.provider
-      : (source.cron_healthy ? 'Live — feed problem' : 'Scheduled task not running');
-
-    el('providerLabel').textContent = PROVIDER_LABELS[source.provider] || source.provider;
-    el('providerSub').textContent = PROVIDER_HINTS[source.provider] || '';
-
-    el('sourceDot').className = 'status-dot ' + (source.source_healthy ? 'ok' : 'err');
-    el('sourceText').textContent = source.source_message;
-
-    el('cronDot').className = 'status-dot ' + (source.cron_healthy ? 'ok' : 'err');
-    el('cronText').textContent = source.cron_healthy
-      ? 'Scheduled task ran ' + fmtDuration(source.cron_age_seconds) + ' ago.'
-      : (source.cron_last_run
-          ? 'Scheduled task last ran ' + fmtDuration(source.cron_age_seconds)
-            + ' ago — it should run every minute. Check the cron job.'
-          : 'The scheduled task has never run. Alerts will not fire until the cron job is installed.');
-
-    var channels = [];
-    if (source.slack_ready) channels.push('Slack');
-    if (source.email_ready) channels.push('Email');
+    var problems = [];
+    if (!source.source_healthy && source.source_message) problems.push(source.source_message);
+    if (!source.cron_healthy) {
+      problems.push(source.cron_last_run
+        ? 'The scheduled task last ran ' + fmtDuration(source.cron_age_seconds)
+          + ' ago — it should run every minute. Check the cron job.'
+        : 'The scheduled task has never run. Alerts will not fire until the cron job is installed.');
+    }
 
     /* Being configured is not the same as working. A revoked token, or a bot
-       removed from its channel, leaves the switch on — and a green tick here
-       over a channel that has not delivered anything for weeks is how nobody
-       finds out until the storm. */
+       removed from its channel, leaves the switch on — and a quietly green
+       badge over a channel that has not delivered anything for weeks is how
+       nobody finds out until the storm. Delivery failures demote the badge
+       even when the feed itself is fine. */
     var delivery = source.delivery || {};
     var broken = [];
-    if (source.slack_ready && delivery.slack && !delivery.slack.ok) broken.push('slack');
-    if (source.email_ready && delivery.email && !delivery.email.ok) broken.push('email');
+    if (source.slack_ready && delivery.slack && !delivery.slack.ok) broken.push('Slack');
+    if (source.email_ready && delivery.email && !delivery.email.ok) broken.push('Email');
+    broken.forEach(function (name) {
+      var report = delivery[name.toLowerCase()];
+      problems.push(name + ' rejected the last alert. ' + (report.message || ''));
+    });
 
-    if (broken.length) {
-      el('notifyDot').className = 'status-dot err';
-      var names = broken.map(function (c) { return c === 'slack' ? 'Slack' : 'Email'; });
-      el('notifyText').textContent = names.join(' and ') + ' rejected the last alert.'
-        + (broken.length === 1 ? ' ' + delivery[broken[0]].message : '');
-      return;
-    }
+    badge.className = 'mode-badge '
+      + (healthy && !broken.length ? 'live-ok' : (source.cron_healthy ? '' : 'live-err'));
+    badgeText.textContent = healthy
+      ? (broken.length ? broken.join(' and ') + ' delivery failing' : 'Live — ' + source.provider)
+      : (source.cron_healthy ? 'Live — feed problem' : 'Scheduled task not running');
 
-    el('notifyDot').className = 'status-dot ' + (channels.length ? 'ok' : 'warn');
-    el('notifyText').textContent = channels.length
-      ? 'Server alerts go to ' + channels.join(' and ') + '.'
-      : 'No server alert channel is switched on — only this page will show alerts.';
+    badge.title = problems.join(' ');
   }
-
-  var PROVIDER_LABELS = {
-    blitzortung: 'Blitzortung live feed',
-    rest: 'REST endpoint',
-    relay: 'Browser relay',
-    simulator: 'Simulator (demo data)'
-  };
-  var PROVIDER_HINTS = {
-    blitzortung: 'Streamed by the server worker each minute.',
-    rest: 'Polled by the server on a schedule.',
-    relay: 'Fed by this browser tab — keep it open.',
-    simulator: 'Generating a drifting storm cell for testing. Switch to a live source before relying on alerts.'
-  };
 
   // ---------- forecast (National Weather Service) ----------
 
@@ -945,39 +953,15 @@
 
   // ---------- notifications ----------
 
+  /* The toggle that enabled these went with the alerts panel. A device that
+     switched them on while it existed keeps them — the flag is per-device in
+     localStorage — and Slack and email remain the channels that do not depend
+     on a browser at all. */
   function notify(title, body) {
     if (!state.notifEnabled || state.notifPermission !== 'granted') return;
     try {
       new Notification(title, { body: body, tag: 'stormwatch-alert', renotify: true });
     } catch (e) { /* some browsers refuse outside a user gesture */ }
-  }
-
-  var notifToggle = el('notifToggle');
-  if (notifToggle) {
-    notifToggle.checked = state.notifEnabled && state.notifPermission === 'granted';
-    notifToggle.addEventListener('change', function () {
-      if (!notifToggle.checked) {
-        state.notifEnabled = false;
-        localStorage.setItem(STORE + 'browser_notifications', '0');
-        return;
-      }
-      if (typeof Notification === 'undefined') {
-        toast('This browser does not support notifications.', 'info');
-        notifToggle.checked = false;
-        return;
-      }
-      Notification.requestPermission().then(function (permission) {
-        state.notifPermission = permission;
-        if (permission === 'granted') {
-          state.notifEnabled = true;
-          localStorage.setItem(STORE + 'browser_notifications', '1');
-          toast('Browser notifications are on for this device.', 'ok');
-        } else {
-          notifToggle.checked = false;
-          toast('Notification permission was not granted.', 'info');
-        }
-      });
-    });
   }
 
   // ---------- actions ----------
@@ -993,13 +977,6 @@
     });
   }
 
-  wireButton('simulateBtn', function () {
-    return post('simulate').then(function (data) {
-      toast(data.message || data.error, data.ok ? 'ok' : 'info');
-      return poll();
-    });
-  });
-
   wireButton('muteBtn', function () {
     return post('mute', { minutes: 30 }).then(function (data) {
       toast(data.message || data.error, 'info');
@@ -1010,13 +987,6 @@
   wireButton('unmuteBtn', function () {
     return post('unmute').then(function (data) {
       toast(data.message || data.error, 'ok');
-      return poll();
-    });
-  });
-
-  wireButton('runTickBtn', function () {
-    return post('run_tick').then(function (data) {
-      toast(data.message || data.error, data.ok ? 'ok' : 'info');
       return poll();
     });
   });
@@ -1120,25 +1090,22 @@
      admits it is broken — this page is used to decide whether it is safe to
      be outside. */
   function reportPollFailure(detail) {
-    el('modeBadge').className = 'mode-badge live-err';
+    var badge = el('modeBadge');
+    badge.className = 'mode-badge live-err';
+    badge.title = detail;
     el('modeBadgeText').textContent = 'Dashboard not updating';
-    el('sourceDot').className = 'status-dot err';
-    el('sourceText').textContent = detail;
 
     if (state.level !== null) return;
 
-    // Nothing has ever been read, so nothing on this page is known to be true.
+    /* Nothing has ever been read, so nothing on this page is known to be
+       true. This banner is also the only place left that can quote the
+       failure itself — that line is normally the whole diagnosis. */
     el('alertBanner').className = 'alert-banner unknown';
     el('alertIcon').innerHTML = BANNER.unknown.icon;
     el('alertT1').textContent = BANNER.unknown.title;
     el('alertT2').textContent = 'This page cannot read the alert state, so it cannot tell you whether '
       + 'there is lightning nearby. Slack and email alerts are sent by the server and do not '
-      + 'depend on this page.';
-    el('cronDot').className = 'status-dot err';
-    el('cronText').textContent = 'Unknown — no answer from the server.';
-    el('notifyDot').className = 'status-dot err';
-    el('notifyText').textContent = 'Unknown — no answer from the server.';
-    el('providerSub').textContent = '';
+      + 'depend on this page. (' + detail + ')';
   }
 
   function applyState(data) {
@@ -1279,9 +1246,15 @@
     boot: boot,
     poll: poll,
     toast: toast,
+    /* The relay's live connection state lands on the header badge now that
+       the data source panel is gone. The next poll's renderSource repaints
+       the badge from the server's view, which for the relay provider is fed
+       by this tab's own check-ins — the two agree within a poll. */
     setSourceStatus: function (ok, message) {
-      el('sourceDot').className = 'status-dot ' + (ok ? 'ok' : 'err');
-      el('sourceText').textContent = message;
+      var badge = el('modeBadge');
+      badge.className = 'mode-badge' + (ok ? ' live-ok' : ' live-err');
+      badge.title = message;
+      el('modeBadgeText').textContent = ok ? 'Live — relay' : 'Relay problem';
     }
   };
 
