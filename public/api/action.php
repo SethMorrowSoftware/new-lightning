@@ -95,6 +95,18 @@ switch ($action) {
         );
         Http::json(['ok' => $result['ok'], 'message' => $result['message']], $result['ok'] ? 200 : 200);
 
+    case 'preview_slack':
+        // A sample warning in the operator's own wording and colours, marked
+        // as a preview and stripped of mentions so it cannot page the channel.
+        $result = SlackNotifier::sendPreview();
+        Events::log(
+            'slack.test',
+            $result['ok'] ? Events::SEVERITY_INFO : Events::SEVERITY_ERROR,
+            ($result['ok'] ? 'Slack preview posted: ' : 'Slack preview failed: ') . $result['message'],
+            []
+        );
+        Http::json(['ok' => $result['ok'], 'message' => $result['message']]);
+
     case 'test_email':
         $result = EmailNotifier::sendTest();
         Events::log(

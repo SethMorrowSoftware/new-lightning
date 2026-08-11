@@ -71,6 +71,24 @@ final class Settings
             'slack_extra_mention' => ['type' => 'string', 'default' => '', 'max' => 200],
             'slack_username'   => ['type' => 'string', 'default' => '', 'max' => 80],
             'slack_icon_emoji' => ['type' => 'string', 'default' => '', 'max' => 40],
+            // Message look: full card or one paragraph, and the accent colour
+            // per alert kind (warnings and updates share one). Slack only.
+            'slack_style'           => ['type' => 'enum', 'default' => 'detailed', 'options' => ['detailed', 'compact']],
+            'slack_color_warning'   => ['type' => 'string', 'default' => '#FF4D5E', 'max' => 7],
+            'slack_color_watch'     => ['type' => 'string', 'default' => '#FFB627', 'max' => 7],
+            'slack_color_all_clear' => ['type' => 'string', 'default' => '#4ADE9C', 'max' => 7],
+            // Message wording, one headline and body per alert kind. Blank
+            // means the standard text the engine builds; placeholders such as
+            // {venue} and {distance} are filled in at send time. The 150-char
+            // headline cap is Slack's own header-block limit.
+            'slack_tpl_warning_title'   => ['type' => 'string', 'default' => '', 'max' => 150],
+            'slack_tpl_warning_body'    => ['type' => 'text', 'default' => '', 'max' => 1000],
+            'slack_tpl_watch_title'     => ['type' => 'string', 'default' => '', 'max' => 150],
+            'slack_tpl_watch_body'      => ['type' => 'text', 'default' => '', 'max' => 1000],
+            'slack_tpl_all_clear_title' => ['type' => 'string', 'default' => '', 'max' => 150],
+            'slack_tpl_all_clear_body'  => ['type' => 'text', 'default' => '', 'max' => 1000],
+            'slack_tpl_update_title'    => ['type' => 'string', 'default' => '', 'max' => 150],
+            'slack_tpl_update_body'     => ['type' => 'text', 'default' => '', 'max' => 1000],
 
             // ---- Email ----
             'email_enabled'   => ['type' => 'bool', 'default' => false],
@@ -385,6 +403,14 @@ final class Settings
                         (int) round(self::POLL_WINDOW_MARGIN * 100)
                     );
                 }
+            }
+        }
+        // The accent colours reach Slack verbatim, and Slack rejects the whole
+        // message over a malformed one — during a storm. Refuse it here, where
+        // somebody is looking.
+        foreach (['slack_color_warning', 'slack_color_watch', 'slack_color_all_clear'] as $colourKey) {
+            if (isset($clean[$colourKey]) && preg_match('/^#[0-9A-Fa-f]{6}$/', (string) $clean[$colourKey]) !== 1) {
+                $errors[$colourKey] = 'Use a six-digit hex colour such as #FF4D5E.';
             }
         }
         if (!empty($merged['slack_enabled'])) {

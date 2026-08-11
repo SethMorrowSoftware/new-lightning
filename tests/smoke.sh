@@ -215,6 +215,9 @@ code=$(curl -s -o "${WORK}/settings.html" -w '%{http_code}' -c "$JAR" -b "$JAR" 
 status_is 200 "$code" "the Slack settings tab renders"
 contains "${WORK}/settings.html" "Bot user OAuth token" "the bot token field is present"
 contains "${WORK}/settings.html" "Channel" "the channel field is present"
+contains "${WORK}/settings.html" "Message text" "the message wording panel is present"
+contains "${WORK}/settings.html" "slack_tpl_warning_body" "the warning template field is present"
+contains "${WORK}/settings.html" 'data-test="preview_slack"' "the warning preview button is present"
 
 SCSRF=$(grep -o 'name="csrf_token" value="[^"]*"' "${WORK}/settings.html" | head -1 | sed 's/.*value="//;s/"//')
 code=$(curl -s -o "${WORK}/saved.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
@@ -241,6 +244,28 @@ for page in "index.php" "settings.php?tab=slack" "history.php" "api/state.php"; 
   if grep -qF "NOT-A-REAL-TOKEN-smoke-test" "${WORK}/leak.html"; then LEAKED=1; fi
 done
 check "the stored token appears on no page or API response" "$LEAKED"
+
+# The message wording and style survive a save and come back to the form.
+code=$(curl -s -o "${WORK}/slack-style.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "slack_style=compact" \
+  -d "slack_color_warning=#AB12CD" \
+  -d "slack_tpl_warning_title=Lightning at {venue} — smoke headline" \
+  "${BASE}/settings.php?tab=slack")
+contains "${WORK}/slack-style.html" "Settings saved" "message wording and style save"
+curl -s -o "${WORK}/slack-style2.html" -c "$JAR" -b "$JAR" "${BASE}/settings.php?tab=slack"
+contains "${WORK}/slack-style2.html" "smoke headline" "the saved wording is shown back on the form"
+contains "${WORK}/slack-style2.html" "#AB12CD" "the saved colour is shown back on the form"
+
+code=$(curl -s -o "${WORK}/slack-badcolor.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "slack_color_warning=notacolor" \
+  "${BASE}/settings.php?tab=slack")
+contains "${WORK}/slack-badcolor.html" "Nothing was saved" "a malformed accent colour is rejected"
+
+# Put the defaults back so the rest of the run sees the standard messages.
+curl -s -o /dev/null -c "$JAR" -b "$JAR" \
+  -d "csrf_token=${SCSRF}" -d "action=save" -d "slack_style=detailed" \
+  -d "slack_color_warning=#FF4D5E" -d "slack_tpl_warning_title=" \
+  "${BASE}/settings.php?tab=slack"
 
 # Radii must stay nested.
 code=$(curl -s -o "${WORK}/badradius.html" -w '%{http_code}' -c "$JAR" -b "$JAR" \

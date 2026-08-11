@@ -1467,6 +1467,74 @@ T::group('Slack message construction');
     Settings::put(['slack_mention' => 'none']);
 }
 
+T::group('Slack message templates and style');
+{
+    // {cooldown_minutes} reads this setting; pin it rather than inherit
+    // whatever the cooldown groups above left behind.
+    Settings::put(['all_clear_minutes' => 30]);
+
+    $makeWarning = static function (): Alert {
+        $alert = new Alert(Alert::KIND_WARNING, 'Lightning within 10.0 mi', 'Move activities indoors.');
+        $alert->nearestMi = 4.2;
+        $alert->bearingDeg = 90.0;
+        $alert->struckAt = time();
+        $alert->strikeCount = 7;
+        return $alert;
+    };
+
+    // Custom wording, with every placeholder class represented.
+    Settings::putRaw('slack_tpl_warning_title', '🚨 {venue}: strike {distance} {direction}');
+    Settings::putRaw('slack_tpl_warning_body', 'Clear the park & hold. All clear after {cooldown_minutes} quiet minutes. Strikes: {strikes}.');
+    $payload = SlackNotifier::messagePayload($makeWarning());
+    $header = $payload['attachments'][0]['blocks'][0]['text']['text'];
+    T::same('🚨 Castle Fun Center: strike 4.2 mi E', $header, 'the custom headline is used with its placeholders filled');
+    T::ok(strpos($header, '⚡') === false, 'a custom headline is not given the standard emoji as well');
+    $body = $payload['attachments'][0]['blocks'][1]['text']['text'];
+    T::ok(strpos($body, 'All clear after 30 quiet minutes. Strikes: 7.') !== false, 'the custom body fills its placeholders');
+    T::ok(strpos($body, '&amp; hold') !== false, 'custom wording is still escaped for Slack');
+    T::ok(strpos($payload['text'], 'Castle Fun Center: strike') !== false, 'the notification line carries the custom headline');
+    T::ok(strpos($payload['attachments'][0]['fallback'], 'All clear after 30 quiet minutes') !== false, 'the fallback carries the custom wording, not the wording it replaced');
+
+    // A typo'd placeholder must stay visible, or the preview cannot catch it.
+    Settings::putRaw('slack_tpl_warning_title', '{nope} at {venue}');
+    $typoPayload = SlackNotifier::messagePayload($makeWarning());
+    T::ok(strpos($typoPayload['attachments'][0]['blocks'][0]['text']['text'], '{nope}') !== false, 'an unknown placeholder is left visible rather than swallowed');
+
+    // Templates belong to the four alert kinds; a test message keeps its own text.
+    $test = new Alert(Alert::KIND_TEST, 'Storm Watch test alert', 'If you can read this…');
+    $testPayload = SlackNotifier::messagePayload($test);
+    T::ok(strpos($testPayload['attachments'][0]['blocks'][0]['text']['text'], 'Storm Watch test alert') !== false, 'test messages ignore the warning template');
+
+    // Colours: the operator's choice reaches the attachment, per kind.
+    Settings::putRaw('slack_color_warning', '#123ABC');
+    T::same('#123ABC', SlackNotifier::messagePayload($makeWarning())['attachments'][0]['color'], 'the warning colour setting reaches the message');
+    $watch = new Alert(Alert::KIND_WATCH, 'Storm approaching', 'Keep an eye on it.');
+    T::same('#FFB627', SlackNotifier::messagePayload($watch)['attachments'][0]['color'], 'an untouched kind keeps its standard colour');
+    T::ok(isset(Settings::put(['slack_color_warning' => 'red'])['slack_color_warning']), 'a colour that is not #RRGGBB is refused');
+    T::same([], Settings::put(['slack_color_warning' => '#FF4D5E']), 'a well-formed colour saves');
+
+    // Compact layout: one paragraph, no detail fields, no footer.
+    Settings::putRaw('slack_style', 'compact');
+    $compact = SlackNotifier::messagePayload($makeWarning());
+    T::same(1, count($compact['attachments'][0]['blocks']), 'compact style sends a single block');
+    T::same('section', $compact['attachments'][0]['blocks'][0]['type'], 'and it is a plain section, not a header');
+    T::ok(strpos((string) json_encode($compact), '"fields"') === false, 'compact style drops the detail fields');
+
+    // A preview must never page the channel it posts to.
+    Settings::put(['slack_mention' => 'channel']);
+    $suppressed = $makeWarning();
+    $suppressed->suppressMentions = true;
+    T::ok(strpos((string) json_encode(SlackNotifier::messagePayload($suppressed)), '<!channel>') === false, 'suppressMentions keeps a critical alert from mentioning the channel');
+    Settings::put(['slack_mention' => 'none']);
+
+    // Back to the standard wording once the templates are cleared.
+    Settings::putRaw('slack_style', 'detailed');
+    Settings::putRaw('slack_tpl_warning_title', '');
+    Settings::putRaw('slack_tpl_warning_body', '');
+    $standard = SlackNotifier::messagePayload($makeWarning());
+    T::same('⚡ Lightning within 10.0 mi', $standard['attachments'][0]['blocks'][0]['text']['text'], 'blank templates fall back to the standard wording');
+}
+
 T::group('Accounts');
 {
     T::ok(Auth::passwordProblem('short') !== null, 'short passwords are rejected');
