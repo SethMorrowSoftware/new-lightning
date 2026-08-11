@@ -164,25 +164,20 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 @media (max-width:640px){.nav .spacer{flex-basis:100%;height:0;}}
 
 /* ---------- Layout ---------- */
-/* Both columns stretch to the taller of the two and the map takes up the
-   slack, so the page has no dead corner. Previously the left column ended
-   with the map and the right ran on for another panel and a half, leaving a
-   pane of empty background under the thing people look at most. */
+/* Two columns, one panel each: the map, and the strike log run out to the
+   map's full height beside it, so the page has no dead corner. The map is
+   what actually sets the row height — the log must never get a say in it,
+   for the reason given at .log-body below. */
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:var(--sp-5);align-items:stretch;}
 .grid > *{min-width:0;display:flex;flex-direction:column;}
-/* Only the map absorbs the difference. Letting the strike log grow too fed
-   back on itself — a taller log made the row taller, which gave the log more
-   room, which made it taller again, and the page came out five thousand
-   pixels long. The map has a natural maximum size; a list of strikes does
-   not. */
-.grid > *:first-child > .panel:last-child{flex:1;display:flex;flex-direction:column;min-height:0;}
-.grid > *:first-child > .panel:last-child > .panel-title{flex:0 0 auto;}
+.grid > * > .panel:last-child{flex:1;display:flex;flex-direction:column;min-height:0;}
+.grid > * > .panel:last-child > .panel-title{flex:0 0 auto;}
 .grid .map-wrap{flex:1;display:flex;min-height:0;}
 .grid .radar-legend{flex:0 0 auto;}
 @media (max-width:1040px){.grid{grid-template-columns:minmax(0,1fr) 330px;}}
 @media (max-width:900px){
   .grid{grid-template-columns:minmax(0,1fr);}
-  .grid > *:first-child > .panel:last-child{flex:0 1 auto;}
+  .grid > * > .panel:last-child{flex:0 1 auto;}
 }
 
 .panel{background:var(--panel);border:1px solid var(--border-soft);border-radius:var(--r-lg);
@@ -253,6 +248,26 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .alert-text .t2{font-size:15px;color:var(--text-hi);opacity:.92;margin-top:3px;line-height:1.45;}
 .alert-actions{display:flex;gap:var(--sp-2);flex-shrink:0;}
 .alert-actions .btn{width:auto;padding:var(--sp-2) var(--sp-3);font-size:var(--fs-xs);}
+
+/* The hold countdown. Tabular figures because it repaints every second and
+   the digits must not shuffle; the class selector out-ranks the browser's
+   [hidden] rule, so hidden has to be said again — see .wx-alerts. */
+.alert-countdown{
+  display:flex;flex-direction:column;align-items:center;gap:2px;flex-shrink:0;
+  padding:var(--sp-2) var(--sp-4);border-radius:var(--r-md);
+  background:rgba(0,0,0,0.22);border:1px solid rgba(255,255,255,0.09);
+}
+.alert-countdown[hidden]{display:none;}
+.alert-countdown .cd{font-family:var(--font-mono);font-size:var(--fs-num);font-weight:500;
+  line-height:1.15;font-variant-numeric:tabular-nums;letter-spacing:-.5px;color:var(--text-hi);}
+.alert-countdown .cd-l{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.6px;
+  color:var(--text-mid);white-space:nowrap;}
+@media (max-width:640px){
+  /* The banner is stacked on a phone; a centred column floating in a wrapped
+     row reads as debris. One full-width row, number trailing the label. */
+  .alert-countdown{flex-direction:row-reverse;justify-content:space-between;
+    align-items:baseline;width:100%;}
+}
 
 /* ---------- Forecast card ----------
    Sits between the alert banner and the map: the banner says whether it is
@@ -446,11 +461,25 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .stat.is-primary .n{color:var(--amber);}
 
 /* ---------- Strike log ---------- */
+/* The log fills the height the map column set, and only ever receives it.
+   Letting the log's own content into the row height fed back on itself — a
+   taller log made the row taller, which gave the log more room, which made
+   it taller again, and the page came out five thousand pixels long. The
+   list is absolutely positioned so its content cannot reach the intrinsic
+   size at all: the map decides, the log scrolls inside what it was given. */
+.log-body{flex:1;position:relative;min-height:0;}
+.log-body > .log-list{position:absolute;inset:0;}
+@media (max-width:900px){
+  /* One column: nothing sits beside the log to set a height, so the list
+     goes back into normal flow with its own cap. */
+  .log-body{flex:0 1 auto;}
+  .log-body > .log-list{position:static;max-height:280px;}
+}
 /* The list is scrollable and used to end on a row sliced in half by the
    panel edge, which reads as a rendering fault rather than as "there is
    more". A mask fades the last few pixels so the cut is deliberate. */
 .log-list{
-  max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:var(--sp-2);
+  overflow-y:auto;display:flex;flex-direction:column;gap:var(--sp-2);
   padding-bottom:var(--sp-1);
   -webkit-mask-image:linear-gradient(180deg,#000 calc(100% - 20px),transparent);
   mask-image:linear-gradient(180deg,#000 calc(100% - 20px),transparent);
@@ -471,8 +500,10 @@ h2{font-family:var(--font-display);font-size:var(--fs-lg);font-weight:700;margin
 .log-row.close:hover{background:rgba(255,77,94,0.11);}
 .log-row .dist{font-weight:500;color:var(--text-hi);}
 .log-row.close .dist{color:var(--danger);}
+/* Auto margins so the empty state sits mid-panel now the list is tall,
+   rather than as a lone line pinned under the title. */
 .log-empty{color:var(--text-lo);font-size:var(--fs-sm);text-align:center;
-  padding:var(--sp-7) var(--sp-4);line-height:1.6;}
+  padding:var(--sp-7) var(--sp-4);line-height:1.6;margin:auto 0;}
 
 /* ---------- Forms ---------- */
 .field{margin-bottom:var(--sp-4);}

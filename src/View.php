@@ -137,6 +137,14 @@ final class View
           <span class="who">Signed in as <?= Http::e((string) ($user['display_name'] !== '' ? $user['display_name'] : $user['username'])) ?></span>
           <a href="<?= Http::e(Http::url('logout.php')) ?>">Sign out</a>
         </nav>
+        <?php else: ?>
+        <?php /* A public or kiosk dashboard is read only, but read only must
+                 not mean stranded: without this link the operator's own
+                 sign-in page is reachable only by typing the URL. */ ?>
+        <nav class="nav">
+          <span class="spacer"></span>
+          <a href="<?= Http::e(Http::url('login.php')) ?>">Sign in</a>
+        </nav>
         <?php endif;
     }
 
