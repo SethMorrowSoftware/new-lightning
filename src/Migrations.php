@@ -144,7 +144,33 @@ final class Migrations
                     message $text NULL
                 )$suffix");
             }],
+
+            [4, 'remember when a warning last cleared', static function (Database $db): void {
+                $int = $db->driver() === 'sqlite' ? 'INTEGER' : 'BIGINT';
+
+                // The moment a "go indoors" warning was stood down. The watch
+                // cooldown reads it to keep a departing storm from immediately
+                // posting "storm approaching" on its way out of the alert ring.
+                self::addColumn($db, 'alert_state', 'warning_cleared_at', "$int NULL");
+            }],
         ];
+    }
+
+    /**
+     * Add a column idempotently. Neither MySQL nor older SQLite has ADD COLUMN
+     * IF NOT EXISTS, and a migration can be run twice by two processes reaching
+     * a new release in the same second, so swallow "already exists".
+     */
+    private static function addColumn(Database $db, string $table, string $column, string $definition): void
+    {
+        try {
+            $db->run(sprintf('ALTER TABLE %s ADD COLUMN %s %s', $table, $column, $definition));
+        } catch (\PDOException $e) {
+            $message = strtolower($e->getMessage());
+            if (strpos($message, 'duplicate') === false && strpos($message, 'exist') === false) {
+                throw $e;
+            }
+        }
     }
 
     /**

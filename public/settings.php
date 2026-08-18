@@ -38,7 +38,7 @@ $tabFields = [
                 'map_zoom', 'map_style', 'radar_overlay', 'radar_opacity', 'ui_refresh_seconds',
                 'marker_ttl_minutes', 'nws_enabled', 'nws_refresh_minutes', 'nws_contact'],
     'alerts' => ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
-                 'cooldown_scope', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
+                 'cooldown_scope', 'watch_cooldown_minutes', 'realert_minutes', 'closer_delta_mi', 'notify_watch',
                  'notify_all_clear', 'notify_errors', 'monitor_schedule_enabled',
                  'monitor_lead_minutes', 'monitor_trail_minutes'],
     'slack' => ['slack_enabled', 'slack_mode', 'slack_bot_token', 'slack_webhook_url', 'slack_channel',
@@ -386,6 +386,16 @@ View::header('settings');
           <div class="field-note">
             Widen this and a storm circling just outside the alert radius keeps the venue on hold
             rather than triggering an early all clear.
+          </div>
+        </div>
+        <div class="field">
+          <label for="watch_cooldown_minutes">Hold watch alerts after an all clear (minutes)</label>
+          <input type="number" id="watch_cooldown_minutes" name="watch_cooldown_minutes" min="0" max="240" value="<?= Http::e($value('watch_cooldown_minutes')) ?>" class="<?= $errorClass('watch_cooldown_minutes') ?>">
+          <?= $errorNote('watch_cooldown_minutes') ?>
+          <div class="field-note">
+            A storm still flashes in the watch radius as it leaves, which would post
+            &ldquo;storm approaching&rdquo; minutes after the all clear. 0 = no hold.
+            Warnings are never held.
           </div>
         </div>
       </div>

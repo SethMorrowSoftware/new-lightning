@@ -248,6 +248,10 @@ final class AlertEngine
         // sent — an all clear that is switched off still has to reset the
         // state, or the next storm would never alert.
         $resolvesTo = null;
+        // Set on the run that stands a warning down, so the watch cooldown
+        // below knows how long ago the venue was last told to go indoors.
+        $warningCleared = false;
+        $watchHeld = false;
 
         if ($level === self::LEVEL_WARNING && $notifiedLevel !== self::LEVEL_WARNING) {
             $alert = self::buildWarning($lastInAlert, $nearest, $alertRadius, $window);
@@ -259,10 +263,21 @@ final class AlertEngine
                 ? self::buildAllClear($window, $level, $nearest)
                 : null;
             $resolvesTo = self::LEVEL_CLEAR;
+            $warningCleared = true;
         } elseif ($level === self::LEVEL_WATCH
             && $notifiedLevel === self::LEVEL_CLEAR
             && Settings::getBool('notify_watch')) {
-            $alert = self::buildWatch($lastInWatch, $nearest, $watchRadius, $window);
+            // A storm rarely stops at the alert radius on its way out: it goes
+            // on flashing in the watch ring for a while, which would post
+            // "storm approaching" minutes after the all clear said it had
+            // gone. Hold the watch until the departing storm has had time to
+            // leave; a storm that is genuinely still around when the hold
+            // expires still gets its watch.
+            if (self::watchHeldAfterWarning($now, $state)) {
+                $watchHeld = true;
+            } else {
+                $alert = self::buildWatch($lastInWatch, $nearest, $watchRadius, $window);
+            }
         } elseif ($level === self::LEVEL_CLEAR && $notifiedLevel !== self::LEVEL_CLEAR) {
             // A watch that was announced has now faded out entirely.
             $alert = Settings::getBool('notify_all_clear')
@@ -292,6 +307,13 @@ final class AlertEngine
             $changes['notified_nearest_mi'] = $alert !== null && $alert->kind !== Alert::KIND_ALL_CLEAR
                 ? $nearestMi
                 : null;
+            if ($warningCleared) {
+                $changes['warning_cleared_at'] = $now;
+            }
+        }
+
+        if ($deliver && $watchHeld) {
+            self::logWatchHold($state);
         }
 
         self::updateState($changes);
@@ -304,6 +326,10 @@ final class AlertEngine
                 'notified_level' => $state['notified_level'],
                 'notified_at' => $state['notified_at'],
                 'notified_nearest_mi' => $state['notified_nearest_mi'],
+                // Rolled back with the rest: an all clear that reaches nobody
+                // is retried, and the watch hold should start from the attempt
+                // that actually landed.
+                'warning_cleared_at' => $state['warning_cleared_at'] ?? null,
             ],
             // The notified_at this run stamped, so the rollback can tell its own
             // write from somebody else's.
@@ -315,6 +341,68 @@ final class AlertEngine
             'muted_until' => (int) ($state['muted_until'] ?? 0),
             'state' => self::publicState(),
         ];
+    }
+
+    /**
+     * Is a watch notification still being held after a warning stood down?
+     *
+     * The all clear is decided from the alert ring, so it fires while the
+     * storm is still lit up between the alert and watch radii — the tail of
+     * the storm that has just been announced as over. Announcing that tail as
+     * a fresh "storm approaching" is the spam this exists to stop.
+     *
+     * @param array<string,mixed> $state
+     */
+    private static function watchHeldAfterWarning(int $now, array $state): bool
+    {
+        $minutes = Settings::getInt('watch_cooldown_minutes');
+        if ($minutes <= 0) {
+            return false;
+        }
+        $clearedAt = isset($state['warning_cleared_at']) ? (int) $state['warning_cleared_at'] : 0;
+        if ($clearedAt <= 0) {
+            return false;
+        }
+        // A clock that has gone backwards, or a restored database, could put
+        // the stamp in the future and hold every watch from then on.
+        if ($clearedAt > $now) {
+            return false;
+        }
+        return ($now - $clearedAt) < ($minutes * 60);
+    }
+
+    /**
+     * Record a held watch once per storm rather than once per tick, so the
+     * event log shows what was suppressed without becoming the spam in a
+     * different place.
+     *
+     * @param array<string,mixed> $state
+     */
+    private static function logWatchHold(array $state): void
+    {
+        $clearedAt = isset($state['warning_cleared_at']) ? (int) $state['warning_cleared_at'] : 0;
+        try {
+            $last = Database::instance()->first(
+                "SELECT created_at FROM events WHERE type = 'alert.held' ORDER BY id DESC LIMIT 1"
+            );
+            if ($last !== null && (int) $last['created_at'] >= $clearedAt) {
+                return; // already noted for this storm
+            }
+            $minutes = Settings::getInt('watch_cooldown_minutes');
+            Events::log(
+                'alert.held',
+                Events::SEVERITY_INFO,
+                sprintf(
+                    'Lightning is still inside the watch radius as the storm moves off, so the watch '
+                    . 'notification is being held. Nothing further is posted until %s UTC unless a strike '
+                    . 'comes back inside the alert radius.',
+                    gmdate('H:i', $clearedAt + ($minutes * 60))
+                ),
+                []
+            );
+        } catch (\Throwable $e) {
+            // Never let the log line interfere with alerting.
+        }
     }
 
     /**
@@ -597,6 +685,9 @@ final class AlertEngine
             'notified_level' => self::LEVEL_CLEAR,
             'notified_at' => time(),
             'notified_nearest_mi' => null,
+            // The strikes the hold was about are gone too. Leaving the stamp
+            // would mute the watch for a storm arriving in the next half hour.
+            'warning_cleared_at' => null,
         ]);
     }
 

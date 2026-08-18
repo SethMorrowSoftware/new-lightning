@@ -111,7 +111,8 @@ function resetData(): void
     $db->run('DELETE FROM runs');
     $db->run(
         'UPDATE alert_state SET level = ?, since = ?, nearest_mi = NULL, nearest_at = NULL,
-         notified_level = NULL, notified_at = NULL, notified_nearest_mi = NULL, muted_until = NULL WHERE id = 1',
+         notified_level = NULL, notified_at = NULL, notified_nearest_mi = NULL, muted_until = NULL,
+         warning_cleared_at = NULL WHERE id = 1',
         ['clear', time()]
     );
 }
@@ -634,6 +635,78 @@ T::group('Alert cooldown');
     T::ok(count(Events::recent(200, 'alert.update')) >= 1, 'an opt-in repeat interval still sends updates');
 
     $applyCooldown(30);
+}
+
+T::group('Watch alerts are held while a storm leaves');
+{
+    // The complaint this exists for: a storm alerts, passes over, gets its all
+    // clear — and then, still flashing between the alert and watch rings on its
+    // way out, immediately posts "storm approaching" as if it were arriving.
+    $departingStorm = static function (int $holdMinutes): void {
+        resetData();
+        Settings::put([
+            'alert_radius_mi' => 10, 'watch_radius_mi' => 20, 'display_radius_mi' => 30,
+            'all_clear_minutes' => 30, 'cooldown_scope' => 'alert',
+            'watch_cooldown_minutes' => $holdMinutes,
+            'realert_minutes' => 0, 'closer_delta_mi' => 0.0,
+            'notify_watch' => true, 'notify_all_clear' => true,
+        ]);
+        placeStrike(5.0, 60.0);                 // overhead: warning
+        AlertEngine::evaluate();
+        // The alert ring falls quiet; the storm is now 15 mi out and departing.
+        Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (31 * 60)]);
+        AlertEngine::evaluate();                // -> all clear
+        placeStrike(15.0, 61.0);
+        AlertEngine::evaluate();
+        placeStrike(16.0, 62.0);
+        AlertEngine::evaluate();
+    };
+
+    T::same(30, Settings::defaults()['watch_cooldown_minutes'], 'the watch hold is half an hour by default');
+
+    $departingStorm(30);
+    T::same(1, count(Events::recent(200, 'alert.warning')), 'the storm alerts once');
+    T::same(1, count(Events::recent(200, 'alert.all_clear')), 'and is all-cleared once');
+    T::same(0, count(Events::recent(200, 'alert.watch')), 'the departing storm does not post a watch');
+    T::same('watch', AlertEngine::publicState()['level'], 'the dashboard still shows the storm is out there');
+    T::same(1, count(Events::recent(200, 'alert.held')), 'the hold is recorded once, not once per tick');
+
+    // Turning it off restores the old behaviour, for anyone who wants it.
+    $departingStorm(0);
+    T::same(1, count(Events::recent(200, 'alert.watch')), 'a zero hold lets the departing watch through');
+
+    // The hold is on watches only. Lightning coming back inside the alert
+    // radius during the hold is exactly what people need to be told about.
+    $departingStorm(30);
+    placeStrike(4.0, 63.0);
+    AlertEngine::evaluate();
+    T::same(2, count(Events::recent(200, 'alert.warning')), 'a returning storm still raises a warning immediately');
+
+    // Once the hold expires a genuinely new storm gets its watch.
+    resetData();
+    Settings::put(['watch_cooldown_minutes' => 30, 'notify_watch' => true]);
+    Database::instance()->run(
+        'UPDATE alert_state SET notified_level = ?, notified_at = ?, warning_cleared_at = ? WHERE id = 1',
+        ['clear', time() - (61 * 60), time() - (61 * 60)]
+    );
+    placeStrike(15.0, 200.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.watch')), 'a watch an hour after the last storm is announced');
+
+    // Clearing the strike log clears the hold with it.
+    resetData();
+    Settings::put(['watch_cooldown_minutes' => 30, 'notify_watch' => true]);
+    placeStrike(4.0, 15.0);
+    AlertEngine::evaluate();
+    Database::instance()->run('UPDATE strikes SET struck_at = ?', [time() - (31 * 60)]);
+    AlertEngine::evaluate();                    // all clear, hold now running
+    Strikes::deleteAll();
+    AlertEngine::reset();
+    placeStrike(15.0, 16.0);
+    AlertEngine::evaluate();
+    T::same(1, count(Events::recent(200, 'alert.watch')), 'a reset lifts the hold as well as the alert state');
+
+    Settings::put(['watch_cooldown_minutes' => 30, 'notify_watch' => false]);
 }
 
 T::group('A storm that has been all-cleared stays closed');
