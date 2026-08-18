@@ -459,6 +459,7 @@ so there is no guessing about what the configuration adds up to.
 | Display radius | 30 mi | What gets stored and drawn on the map |
 | Cooldown | 30 min | Quiet minutes required before the all clear |
 | Cooldown scope | Alert radius | Which strikes keep the cooldown running |
+| Hold watch alerts after an all clear | 30 min | Stops a departing storm posting "storm approaching" |
 | Repeat the alert every | Off | Opt-in reminder while the hold is in force |
 | Re-alert if closer by | Off | Opt-in update if the storm heads straight at you |
 | Operating hours | Off | Monitor only while the venue is open (see below) |
@@ -483,6 +484,16 @@ If the alert radius falls quiet while a storm is still being tracked further
 out, the all clear is still sent — staff who were told to go indoors are owed
 the word that they can come back out — and the message says the storm is still
 around.
+
+**Watch alerts are held while a storm leaves.** A storm rarely stops flashing
+the moment it crosses back out of the alert radius: it goes on striking in the
+watch ring for a while, which used to post "storm approaching" minutes after the
+all clear said it had gone. With watch notifications turned on, one is now held
+for **30 minutes** after a warning stands down. Set it to 0 to turn the hold
+off. Warnings are never held — if lightning comes back inside the alert radius
+during the hold, that alert goes out immediately — and a storm still active when
+the hold expires does get its watch. The activity log records the hold once per
+storm, so you can see what was kept quiet.
 
 The **Mute 30m** button on the dashboard suppresses Slack and email while
 leaving the map and state live — for when you are already standing in the rain

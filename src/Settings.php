@@ -46,6 +46,11 @@ final class Settings
             // have passed with no qualifying strike, then post the all clear.
             'all_clear_minutes' => ['type' => 'int', 'default' => 30, 'min' => 1, 'max' => 240],
             'cooldown_scope'    => ['type' => 'enum', 'default' => 'alert', 'options' => ['alert', 'watch', 'display']],
+            // A storm on its way out keeps throwing lightning in the watch ring
+            // for a while after the all clear, which would otherwise post
+            // "storm approaching" at a sky that is emptying. Hold watch
+            // notifications for this long after a warning clears. 0 = off.
+            'watch_cooldown_minutes' => ['type' => 'int', 'default' => 30, 'min' => 0, 'max' => 240],
             // Both default to off: repeating during a storm is the spam an
             // operator asking for a cooldown is trying to avoid.
             'realert_minutes'   => ['type' => 'int', 'default' => 0, 'min' => 0, 'max' => 240],

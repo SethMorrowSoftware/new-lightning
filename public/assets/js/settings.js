@@ -281,6 +281,16 @@
         lines.push('That is one alert and one all clear per storm — nothing in between.');
       }
 
+      var watchHold = num('watch_cooldown_minutes', 30);
+      var watchOn = document.querySelector('input[name="notify_watch"]');
+      if (watchOn && watchOn.checked) {
+        lines.push(watchHold > 0
+          ? 'After that all clear, hold watch notifications for <b>' + watchHold + ' '
+              + plural(watchHold, 'minute', 'minutes') + '</b> so the storm is not announced again on its way out.'
+          : '<b>Note:</b> watch notifications are not held after an all clear, so a departing storm still '
+              + 'lighting up the ' + watchR + ' mi watch ring will post again straight away.');
+      }
+
       if (scope !== 'alert' && scopeRadius <= alertR) {
         lines.push('<b>Note:</b> this cooldown scope has no effect — its ring is not larger than the alert radius.');
       }
@@ -289,12 +299,14 @@
     };
 
     ['alert_radius_mi', 'watch_radius_mi', 'display_radius_mi', 'all_clear_minutes',
-     'cooldown_scope', 'realert_minutes', 'closer_delta_mi'].forEach(function (id) {
+     'cooldown_scope', 'watch_cooldown_minutes', 'realert_minutes', 'closer_delta_mi'].forEach(function (id) {
       var input = document.getElementById(id);
       if (!input) return;
       input.addEventListener('input', renderSummary);
       input.addEventListener('change', renderSummary);
     });
+    var watchToggle = document.querySelector('input[name="notify_watch"]');
+    if (watchToggle) watchToggle.addEventListener('change', renderSummary);
     renderSummary();
   }
 
